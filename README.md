@@ -35,5 +35,3 @@ As of 11/13/24 and based on [LSST/Rubin Project Outline](https://docs.google.com
 ### Folders
 
 **data_processing/**: Contains all the data processing scripts/notebooks used to explore/format Roman data. The subfolder `lsst/` has the notebooks used to combine Roman + LSST data (starting with Roman data first and adding LSST images) and to create the LSST Detection catalog.
-
-test for .gitignore not including ipynb checkpoints folder
