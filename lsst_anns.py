@@ -56,6 +56,8 @@ from galcheat.utilities import mag2counts, mean_sky_level
 from btk.survey import Filter, Survey, make_wcs
 import galsim
 import btk
+from astropy.stats import gaussian_fwhm_to_sigma
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Create custom ground truth annotations")   
@@ -341,7 +343,6 @@ def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, 
             segs.append(btk.metrics.utils.get_segmentation(imd, sky_level, sigma_noise=lvl))
 
         mask = np.clip(np.sum(segs,axis=0), a_min=0, a_max=1)[0][0]
-        
         mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, SE)   
 
         
