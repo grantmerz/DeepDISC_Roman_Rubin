@@ -293,7 +293,7 @@ def get_bbox(mask):
 
     return rmin-4, rmax+4, cmin-4, cmax+4
 
-def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, lvl=2):
+def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, SE, lvl=2):
 
     """ Code to format the metadatain to a dict.  It takes the i-band and makes a footprint+bounding boxes
     from thresholding to sn*sky_level
@@ -338,9 +338,13 @@ def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, 
             im  = make_im(obj, survey, filt, lvl=lvl, nx=128,ny=128)
             imd = np.expand_dims(np.expand_dims(im.array,0),0)
             sky_level = mean_sky_level(survey, filt).to_value('electron') # gain = 1
-            segs.append(btk.metrics.utils.get_segmentation(imd, sky_level, sigma_noise=2))
+            segs.append(btk.metrics.utils.get_segmentation(imd, sky_level, sigma_noise=lvl))
 
         mask = np.clip(np.sum(segs,axis=0), a_min=0, a_max=1)[0][0]
+        
+        mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, SE)   
+
+        
         if np.sum(mask)==0:
             continue
         
@@ -408,7 +412,7 @@ def get_num_processes():
     return max(num_optimal_processes, max(1, num_cpus // 4))
 #     return max(1, num_optimal_processes)
 
-def process_subpatch(sub_patch, truth_dict, filters, dirpath, survey):
+def process_subpatch(sub_patch, truth_dict, filters, dirpath, survey, SE):
 #     print(f"\nProcessing Sub-Patch: {sub_patch}")
     subpatch_metadata = []
     # grab each cutout and their corresponding truth info
@@ -417,7 +421,7 @@ def process_subpatch(sub_patch, truth_dict, filters, dirpath, survey):
         img_shape = (entry['height'], entry['width']) # height, width
         cat = pd.read_json(entry['obj_catalog'], orient='records')
         dcut = dcut_reformat(cat)
-        ddict = create_metadata(img_shape, dcut, entry['image_id'], sub_patch, filename, survey, filters, lvl=2)
+        ddict = create_metadata(img_shape, dcut, entry['image_id'], sub_patch, filename, survey, filters, SE, lvl=5)
         subpatch_metadata.append(ddict)
     
     df = pd.DataFrame(subpatch_metadata)
@@ -433,6 +437,14 @@ def main(args):
     dirpath = args.data_path
     survey = btk.survey.get_surveys("LSST")
     sub_patches = ['dc2_55.03_-41.9', 'dc2_56.06_-39.8']
+    
+    #Dilates the masks by a kernel the size of the PSF 
+    #The psf variations are small between bands, so just using i-band is ok
+    fwhm = survey.get_filter('i').psf.calculateFWHM()
+    sig = gaussian_fwhm_to_sigma*fwhm/.2
+    SE = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(2*sig),int(2*sig)))
+    
+    
     print("\nReading in the Truth Catalogs for each subpatch")
     print("------------------")
     prepared_data = {}
@@ -445,7 +457,7 @@ def main(args):
     print(f"Using {num_processes} processes")
     
     # partial funcs like in cs421!
-    process_subpatch_partial = partial(process_subpatch, filters=filters, dirpath=dirpath, survey=survey)
+    process_subpatch_partial = partial(process_subpatch, filters=filters, dirpath=dirpath, survey=survey, SE=SE)
 
     with multiprocessing.Pool(processes=2) as pool:
         results = pool.starmap(process_subpatch_partial, prepared_data.items())
