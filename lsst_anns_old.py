@@ -293,7 +293,7 @@ def get_bbox(mask):
 
     return rmin-4, rmax+4, cmin-4, cmax+4
 
-def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, lvl=2):
+def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, lvl):
 
     """ Code to format the metadatain to a dict.  It takes the i-band and makes a footprint+bounding boxes
     from thresholding to sn*sky_level
