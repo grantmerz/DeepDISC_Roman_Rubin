@@ -316,15 +316,16 @@ def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, 
             The dictionary of metadata for the idx'th blend in the batch 
     
     """
-    
+    # for tracking the rejected objects
+    rejected_objs = []
 
     ddict = {}
 
     ddict[f"file_name"] = filename
-    ddict["image_id"] = imid # need to change this to use truth_info imid
+    ddict["image_id"] = imid
     ddict["height"] = img_shape[0]
     ddict["width"] = img_shape[1]
-    ddict["subpatch"] = sub_patch # need to use subpatch dir here
+    ddict["subpatch"] = sub_patch
     
     t = Table.from_pandas(cat)
     n = len(cat)
@@ -334,6 +335,8 @@ def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, 
         obj = t[j]
         x = int(obj['new_x'])
         y = int(obj['new_y'])
+        obj_id = int(obj['id']) if obj['truth_type'] == 2 else int(obj['galaxy_id'])
+        redshift = obj['redshift']
         
         segs = []
         for filt in filters:
@@ -343,10 +346,20 @@ def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, 
             segs.append(btk.metrics.utils.get_segmentation(imd, sky_level, sigma_noise=lvl))
 
         mask = np.clip(np.sum(segs,axis=0), a_min=0, a_max=1)[0][0]
-        mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, SE)   
+        mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, SE) # dilates footprint by PSF size   
 
-        
+        # rejected obj if segm mask is empty
         if np.sum(mask)==0:
+            rejected_objs.append({
+                "obj_id": obj_id,
+                "obj_id_idx": j,
+                "reason": "empty_mask",
+                "ra": obj['ra'],
+                "dec": obj['dec'],
+                "category_id": 1 if obj['truth_type'] == 2 else 0,
+                "mag_i": obj['mag_i'],
+                "redshift": redshift,
+            })
             continue
         
         bbox = get_bbox(mask)
@@ -359,8 +372,6 @@ def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, 
         h = y1-y0
         
         bbox = [x-w/2, y-h/2, w, h]     
-
-        redshift = obj['redshift']
 
         contours, hierarchy = cv2.findContours(
                     (mask).astype(np.uint8), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
@@ -375,24 +386,36 @@ def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, 
                 contour[::2] += (int(np.rint(x))-x0-w//2)
                 contour[1::2] += (int(np.rint(y))-y0-h//2)
                 segmentation.append(contour.tolist())
-        # No valid countors
+        # No valid countors - rejected object
         if len(segmentation) == 0:
-            print(j)
+            rejected_objs.append({
+                "obj_id": obj_id,
+                "obj_id_idx": j,
+                "reason": "no_valid_contours",
+                "ra": obj['ra'],
+                "dec": obj['dec'],
+                "category_id": 1 if obj['truth_type'] == 2 else 0,
+                "mag_i": obj['mag_i'],
+                "redshift": redshift,
+            })
+            print(f"No valid contours for object {j}")
             continue
-        name = f"mag_r"
+
         obj = {
-            "obj_id": j, # will be used to access specific obj's morphological/other info
+            "obj_id": obj_id, # will be used to access specific obj's morphological info
+            "obj_id_idx": j, # idx within catalog
             "bbox": bbox,
             "area": w*h,
             "bbox_mode": 1,
             "segmentation": segmentation,
             "category_id": 1 if obj['truth_type'] == 2 else 0,
             "redshift": redshift,
-            name: obj['mag_r'] # ab mag
+            "mag_i": obj['mag_i'] # ab mag
         }
         objs.append(obj)
 
     ddict['annotations'] = objs
+    ddict['rejected_objs'] = rejected_objs
 
     return ddict
 
@@ -416,6 +439,7 @@ def get_num_processes():
 def process_subpatch(sub_patch, truth_dict, filters, dirpath, survey, SE):
 #     print(f"\nProcessing Sub-Patch: {sub_patch}")
     subpatch_metadata = []
+    all_rejected_objs = []
     # grab each cutout and their corresponding truth info
     for entry in truth_dict:
         filename = dirpath + f"{sub_patch}/full_c{entry['image_id']}_{sub_patch[4:]}.npy"
@@ -423,6 +447,15 @@ def process_subpatch(sub_patch, truth_dict, filters, dirpath, survey, SE):
         cat = pd.read_json(entry['obj_catalog'], orient='records')
         dcut = dcut_reformat(cat)
         ddict = create_metadata(img_shape, dcut, entry['image_id'], sub_patch, filename, survey, filters, SE, lvl=5)
+        
+        # storing rejected obs with img info
+        for obj in ddict['rejected_objs']:
+            obj['file_name'] = filename
+            obj['image_id'] = entry['image_id']
+            obj['subpatch'] = sub_patch
+        all_rejected_objs.extend(ddict['rejected_objs'])
+        # removing rejected objs from output since we will save them thru all_rejected_ibs 
+        del ddict['rejected_objs']
         subpatch_metadata.append(ddict)
     
     df = pd.DataFrame(subpatch_metadata)
@@ -431,13 +464,31 @@ def process_subpatch(sub_patch, truth_dict, filters, dirpath, survey, SE):
     df.to_json(output_file, orient='records')
 #     with open(output_file, 'w') as f:
 #         json.dump(subpatch_metadata, f, indent=2)
-    return f"Processed {sub_patch}"
+    if all_rejected_objs:
+        rejected_df = pd.DataFrame(all_rejected_objs)
+        rejected_output_file = f'/home/yse2/lsst_data/rejected_objs/{sub_patch}_rejected.json'
+        rejected_df.to_json(rejected_output_file, orient='records')
+        print(f"Saved {len(all_rejected_objs)} rejected objects to {rejected_output_file}")
+
+    return f"Processed {sub_patch}, rejected {len(all_rejected_objs)} objects"
     
 def main(args):
     filters = ['u','g','r','i','z','y']
     dirpath = args.data_path
     survey = btk.survey.get_surveys("LSST")
-    sub_patches = ['dc2_55.03_-41.9', 'dc2_56.06_-39.8']
+#     sub_patches = ['dc2_50.93_-42.0', 'dc2_51.34_-41.3']
+    sub_patches = [
+        'dc2_51.37_-38.3',
+        'dc2_51.53_-40.0',
+        'dc2_52.31_-41.6',
+        'dc2_52.93_-40.8',
+        'dc2_53.25_-41.8',
+        'dc2_53.75_-38.9',
+        'dc2_54.24_-38.3',
+        'dc2_54.31_-41.6',
+        'dc2_55.03_-41.9',
+        'dc2_56.06_-39.8'
+    ]
     
     #Dilates the masks by a kernel the size of the PSF 
     #The psf variations are small between bands, so just using i-band is ok
@@ -460,7 +511,7 @@ def main(args):
     # partial funcs like in cs421!
     process_subpatch_partial = partial(process_subpatch, filters=filters, dirpath=dirpath, survey=survey, SE=SE)
 
-    with multiprocessing.Pool(processes=2) as pool:
+    with multiprocessing.Pool(processes=10) as pool:
         results = pool.starmap(process_subpatch_partial, prepared_data.items())
     
     for result in results:
