@@ -244,7 +244,7 @@ def make_galaxy(entry, survey, filt, no_disk= False, no_bulge = False, no_agn = 
     profile = galsim.Add(components)
     return profile
 
-def make_im(entry, survey, filt, lvl, nx=128, ny=128):
+def make_im(entry, survey, filt, lvl, nx=128, ny=128,get_gso=False):
     psf = survey.get_filter(filt).psf
     sky_level = mean_sky_level(survey, filt).to_value('electron') # gain = 1
     obj_type = entry['truth_type'] # 1 for galaxies, 2 for stars
@@ -258,6 +258,12 @@ def make_im(entry, survey, filt, lvl, nx=128, ny=128):
             ny=ny,
             scale=survey.pixel_scale.to_value("arcsec")
         )
+        
+        if get_gso:
+            return im, conv_gal
+        else:
+            return im
+    
     else:
         star, gsparams, flux = make_star(entry, survey, survey.get_filter(filt))
         max_n_photons = 10_000_000
@@ -275,7 +281,11 @@ def make_im(entry, survey, filt, lvl, nx=128, ny=128):
             maxN=1_000_000,  # shoot in batches this size
             rng=grng
         )
-    return im
+        
+        if get_gso:
+            return im, conv_star
+        else:
+            return im   
 #     imd = np.expand_dims(np.expand_dims(im.array,0),0)
 #     # thresh for mask set relative to the bg noise level which is what sigma_noise is
 #     # so lower the thresh for the star to include more of its light
@@ -336,17 +346,27 @@ def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, 
         y = int(obj['new_y'])
         
         segs = []
-        for filt in filters:
-            im  = make_im(obj, survey, filt, lvl=lvl, nx=128,ny=128)
-            imd = np.expand_dims(np.expand_dims(im.array,0),0)
-            sky_level = mean_sky_level(survey, filt).to_value('electron') # gain = 1
-            segs.append(btk.metrics.utils.get_segmentation(imd, sky_level, sigma_noise=lvl))
+        for filt in ['u','g','r','i','z','y']:
+            im,im_conv  = make_im(obj, survey, filt, lvl=lvl, nx=64,ny=64, get_gso=True)
+            psf = survey.get_filter(filt).psf
+            #convolve by the psf and threshold with noise multiplied by psf area (Bosch 2018)
+            im_conv2 = galsim.Convolve(im_conv, psf)
+            image = galsim.Image(64,64, scale=survey.pixel_scale.to_value("arcsec"))
+            im2 = im_conv2.drawImage(image,scale=scale,method='no_pixel')
+            #estimate of PSF area
+            #psf_fac = np.pi*psf.calculateMomentRadius()**2
+            psf_fac = np.pi*(gaussian_fwhm_to_sigma*psf.calculateFWHM())**2
+            imd = np.expand_dims(np.expand_dims(im2.array,0),0)
+            sky_level = mean_sky_level(survey, filt).to_value('electron')
+            maskf = btk.metrics.utils.get_segmentation(imd, sky_level*psf_fac, sigma_noise=lvl)[0][0]
+            #dilate by the psf size
+            maskf = cv2.morphologyEx(maskf, cv2.MORPH_DILATE, SE)   
+            segs.append(maskf)
+        #add masks in separate bands
+        mask = np.clip(np.sum(segs,axis=0), a_min=0, a_max=1)
 
-        mask = np.clip(np.sum(segs,axis=0), a_min=0, a_max=1)[0][0]
-        mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, SE)   
-
-        
-        if np.sum(mask)==0:
+        #final check to remove too small masks
+        if np.sum(mask)==0 or np.sum(mask)<12:
             continue
         
         bbox = get_bbox(mask)
