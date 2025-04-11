@@ -347,11 +347,11 @@ def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, 
         
         segs = []
         for filt in ['u','g','r','i','z','y']:
-            im,im_conv  = make_im(obj, survey, filt, lvl=lvl, nx=64,ny=64, get_gso=True)
+            im,im_conv  = make_im(obj, survey, filt, lvl=lvl, nx=128,ny=128, get_gso=True)
             psf = survey.get_filter(filt).psf
             #convolve by the psf and threshold with noise multiplied by psf area (Bosch 2018)
             im_conv2 = galsim.Convolve(im_conv, psf)
-            image = galsim.Image(64,64, scale=survey.pixel_scale.to_value("arcsec"))
+            image = galsim.Image(128,128, scale=survey.pixel_scale.to_value("arcsec"))
             im2 = im_conv2.drawImage(image,scale=scale,method='no_pixel')
             #estimate of PSF area
             #psf_fac = np.pi*psf.calculateMomentRadius()**2
