@@ -348,7 +348,7 @@ def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, 
             #convolve by the psf and threshold with noise multiplied by psf area (Bosch 2018)
             im_conv2 = galsim.Convolve(im_conv, psf)
             image = galsim.Image(128, 128, scale=survey.pixel_scale.to_value("arcsec"))
-            im2 = im_conv2.drawImage(image, scale=scale, method='no_pixel')
+            im2 = im_conv2.drawImage(image, scale=survey.pixel_scale.to_value("arcsec"), method='no_pixel')
             #estimate of PSF area
             # psf_fac = np.pi*psf.calculateMomentRadius()**2
             psf_fac = np.pi*(gaussian_fwhm_to_sigma*psf.calculateFWHM())**2
