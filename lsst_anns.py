@@ -362,7 +362,7 @@ def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, 
         mask = np.clip(np.sum(segs,axis=0), a_min=0, a_max=1)
 
         # rejected obj if segm mask is empty
-        if np.sum(mask)==0 or np.sum(mask) < 12::
+        if np.sum(mask)==0 or np.sum(mask) < 12:
             rejected_objs.append({
                 "obj_id": obj_id,
                 "obj_id_idx": j,
