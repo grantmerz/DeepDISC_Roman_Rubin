@@ -3,72 +3,49 @@ import sys
 # change these paths to your specific directories where deepdisc and detectron2 are stored
 sys.path.insert(0, '/home/yse2/deepdisc/src')
 sys.path.insert(0, '/home/yse2/detectron2')
+
+import os, json, glob
+import time
+import argparse
+import multiprocessing as mp
 import warnings
-warnings.filterwarnings("ignore", category=RuntimeWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
-# warnings.filterwarnings("ignore", category=SettingWithCopyWarning)
-# warnings.filterwarnings("ignore", category=DtypeWarning)
+import numpy as np
+import pandas as pd
+
+import cv2
 import deepdisc
 import detectron2
 print(deepdisc.__file__)
 print(detectron2.__file__)
-from detectron2.data import MetadataCatalog, DatasetCatalog
-
-# Standard imports
-import os, json
-import numpy as np
-import pandas as pd
-import time
-import math
-import glob
 import scarlet
-import cv2
-import argparse
-# for multiprocessing
-import multiprocessing
-from functools import partial
-import psutil
+import sep
+# Print the versions to test the imports and so we know what works
+print(scarlet.__version__)
+print(np.__version__)
+print(sep.__version__)
 
-# astropy
-import astropy.io.fits as fits
-import astropy.units as u
-from astropy.wcs import WCS
-from astropy.coordinates import SkyCoord
-from astropy.nddata import Cutout2D
-from astropy.table import Table
-from astropy.stats import gaussian_fwhm_to_sigma
-from astropy.visualization import make_lupton_rgb
-
-# Astrodet imports
-from deepdisc.preprocessing.get_data import get_cutout
-from deepdisc.astrodet.hsc import get_tract_patch_from_coord, get_hsc_data
-from deepdisc.astrodet.visualizer import ColorMode
-from deepdisc.astrodet.visualizer import Visualizer
-
-import matplotlib
-import matplotlib.pyplot as plt
-from matplotlib import colors
-
-warnings.filterwarnings("ignore", category=pd.errors.SettingWithCopyWarning)
-warnings.filterwarnings("ignore", category=pd.errors.DtypeWarning)
-
-from galcheat.utilities import mag2counts, mean_sky_level
-from btk.survey import Filter, Survey, make_wcs
 import galsim
 import btk
 from astropy.stats import gaussian_fwhm_to_sigma
+from galcheat.utilities import mag2counts, mean_sky_level
+
+# --- Configuration ---
+root_dir = './lsst_data/'
+lsst_dir = f'{root_dir}truth/'
+rejected_mask_dir = f'{root_dir}rejected_objs_lvl5/rejected_masks/'
+
+cutouts_per_tile = 225 # we shld prob just dynamically calculate this by looking through the truth folders
+seed = 8312
+rng = np.random.RandomState(seed)
+grng = galsim.BaseDeviate(rng.randint(0, 2**30))
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Create custom ground truth annotations")   
-    parser.add_argument('--data-path', type=str, default='/home/yse2/lsst_data/truth/', help='Path to the LSST cutouts and truth catalogs')
-    args = parser.parse_args()
-    return args
+class SourceNotVisible(Exception):
+    """Raised when source has no visible flux"""
+    pass
 
 def e1e2_to_ephi(e1,e2):
-    
     pa = np.arctan(e2/e1)
-    
     return pa
 
 def dcut_reformat(cat):
@@ -87,7 +64,7 @@ def dcut_reformat(cat):
 
     cat['a_d'] = cat['size_disk_true']
     cat['b_d'] = cat['size_minor_disk_true']
-
+    # pos angle
     cat['pa_bulge'] = e1e2_to_ephi(cat['ellipticity_1_bulge_true'],cat['ellipticity_2_bulge_true']) * 180.0/np.pi
 
     cat['pa_disk'] = e1e2_to_ephi(cat['ellipticity_1_disk_true'],cat['ellipticity_2_disk_true']) * 180.0/np.pi
@@ -98,10 +75,6 @@ def dcut_reformat(cat):
     cat['g2'] = cat['shear_2']
     
     return cat
-
-seed = 8312
-rng = np.random.RandomState(seed)
-grng = galsim.BaseDeviate(rng.randint(0, 2**30))
 
 def get_star_gsparams(mag, flux, noise):
     """
@@ -244,7 +217,7 @@ def make_galaxy(entry, survey, filt, no_disk= False, no_bulge = False, no_agn = 
     profile = galsim.Add(components)
     return profile
 
-def make_im(entry, survey, filt, lvl, nx=128, ny=128, get_gso=False):
+def make_im(entry, survey, filt, nx=128, ny=128, get_gso=False):
     psf = survey.get_filter(filt).psf
     sky_level = mean_sky_level(survey, filt).to_value('electron') # gain = 1
     obj_type = entry['truth_type'] # 1 for galaxies, 2 for stars
@@ -253,13 +226,13 @@ def make_im(entry, survey, filt, lvl, nx=128, ny=128, get_gso=False):
         gal = make_galaxy(entry, survey, survey.get_filter(filt))
         gal = gal.shear(g1=entry["g1"], g2=entry["g2"])
         conv_gal = galsim.Convolve(gal, psf)
-        im = conv_gal.drawImage(
-            nx=nx,
-            ny=ny,
-            scale=survey.pixel_scale.to_value("arcsec")
-        )
+#         im = conv_gal.drawImage(
+#             nx=nx,
+#             ny=ny,
+#             scale=survey.pixel_scale.to_value("arcsec")
+#         )
         if get_gso:
-            return im, conv_gal, psf
+            return conv_gal, psf
     else:
         star, gsparams, flux = make_star(entry, survey, survey.get_filter(filt))
         max_n_photons = 10_000_000
@@ -267,292 +240,294 @@ def make_im(entry, survey, filt, lvl, nx=128, ny=128, get_gso=False):
         n_photons = 0 if flux < max_n_photons else max_n_photons
         # n_photons = 0 if entry[f'flux_{filt}'] < max_n_photons else max_n_photons
         conv_star = galsim.Convolve(star, psf)
-        im = conv_star.drawImage(
-            nx=nx,
-            ny=ny,
-            scale=survey.pixel_scale.to_value("arcsec"),
-            method="phot",
-            n_photons=n_photons,
-            poisson_flux=True,
-            maxN=1_000_000,  # shoot in batches this size
-            rng=grng
-        )
+#         im = conv_star.drawImage(
+#             nx=nx,
+#             ny=ny,
+#             scale=survey.pixel_scale.to_value("arcsec"),
+#             method="phot",
+#             n_photons=n_photons,
+#             poisson_flux=True,
+#             maxN=1_000_000,  # shoot in batches this size
+#             rng=grng
+#         )
         if get_gso:
-            return im, conv_star, psf
+            return conv_star, psf
     return im, psf
-#     imd = np.expand_dims(np.expand_dims(im.array,0),0)
-#     # thresh for mask set relative to the bg noise level which is what sigma_noise is
-#     # so lower the thresh for the star to include more of its light
-#     # so lower sigma_noise, bigger masks and higher lvl, smaller masks bc it'll only capture very brightest central part of star
-# #     if obj_type == 2: # if star, 
-# #         segs = btk.metrics.utils.get_segmentation(imd, sky_level, sigma_noise=lvl * 0.02)
-# #     else:
-# #         segs = btk.metrics.utils.get_segmentation(imd, sky_level, sigma_noise=lvl) 
-#     segs = btk.metrics.utils.get_segmentation(imd, sky_level, sigma_noise=lvl) 
-#     return segs[0][0], mag
 
+# uses combined mask
 def get_bbox(mask):
     rows = np.any(mask, axis=1)
     cols = np.any(mask, axis=0)
-    rmin, rmax = np.where(rows)[0][[0, -1]]
+    rmin, rmasx = np.where(rows)[0][[0, -1]]
     cmin, cmax = np.where(cols)[0][[0, -1]]
 
     return rmin-4, rmax+4, cmin-4, cmax+4
 
-def create_metadata(img_shape, cat, imid, sub_patch, filename, survey, filters, SE, lvl=5):
+def load_cutout_data(tile, cutout_id, wcs_header=None):
+    """Load essential truth catalog data for a specific cutout"""
+    base_filename = f'c{cutout_id}_{tile}'
+    paths = {
+        'lsst_img': f'{lsst_dir}dc2_{tile}/full_{base_filename}.npy',
+        'truth_cat': f'{lsst_dir}dc2_{tile}/truth_{base_filename}.json',
+        'det_cat': f'{lsst_dir}dc2_{tile}/det_{base_filename}.json',
+        'matched_det': f'{lsst_dir}dc2_{tile}/matched_{base_filename}.json'
+    }
 
-    """ Code to format the metadatain to a dict.  It takes the i-band and makes a footprint+bounding boxes
-    from thresholding to sn*sky_level
-    
-    Parameters
-    
-    blend_batch: BTK blend batch
-        BTK batch of blends
-    sky_level: float
-        The background sky level in the i-band
-    sn: int
-        The signal-to-noise ratio for thresholding
-    idx:
-        The index of the blend in the blend_batch
-        
-    Returns
-        ddict: dict
-            The dictionary of metadata for the idx'th blend in the batch 
-    
+    if not os.path.exists(paths['lsst_img']):
+        # we can handle this in the main loop by creating empty dictionaries
+        print(f"Warning: Image file for cutout {cutout_id} from tile {tile} does not exist! Skipping.")
+        return None
+
+    try:
+        lsst_img = np.load(paths['lsst_img'])
+        height, width = lsst_img.shape[1], lsst_img.shape[2]
+        del lsst_img
+        # load truth cat if it exists, otherwise create empty dfs
+        truth_cat = pd.read_json(paths['truth_cat'], orient='records') if os.path.exists(paths['truth_cat']) else pd.DataFrame()
+        return {
+            'tile': tile,
+            'cutout_id': cutout_id,
+            'truth_cat': truth_cat,
+            'width': width,
+            'height': height,
+            'wcs': wcs_header,
+            'paths': paths
+        }
+    except Exception as e:
+        print(f"Error loading cutout {cutout_id} from tile {tile}: {e}")
+        return None
+
+def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, snr_lvl=5):
     """
-    # for tracking the rejected objects
-    rejected_objs = []
+    Processes a single object from the truth catalog to generate an annotation or a rejection log.
+    """
+    filters = ['u', 'g', 'r', 'i', 'z', 'y']
+    segs = []
 
-    ddict = {}
-
-    ddict[f"file_name"] = filename
-    ddict["image_id"] = imid
-    ddict["height"] = img_shape[0]
-    ddict["width"] = img_shape[1]
-    ddict["subpatch"] = sub_patch
-    
-    t = Table.from_pandas(cat)
-    n = len(cat)
-    objs = []
-    for j in range(n):
-
-        obj = t[j]
-        x = int(obj['new_x'])
-        y = int(obj['new_y'])
-        obj_id = int(obj['id']) if obj['truth_type'] == 2 else int(obj['galaxy_id'])
-        redshift = obj['redshift']
-        
-        segs = []
-        for filt in filters:            
-            im, im_conv, psf  = make_im(obj, survey, filt, lvl=lvl, nx=128,ny=128, get_gso=True)
+    # simulate the object and create segmentation masks for each band
+    for filt in filters:
+        try:
+            # isolated image of object
+            im_conv, psf = make_im(obj_entry, survey, filt, nx=128, ny=128, get_gso=True)
             #convolve by the psf and threshold with noise multiplied by psf area (Bosch 2018)
             im_conv2 = galsim.Convolve(im_conv, psf)
             image = galsim.Image(128, 128, scale=survey.pixel_scale.to_value("arcsec"))
             im2 = im_conv2.drawImage(image, scale=survey.pixel_scale.to_value("arcsec"), method='no_pixel')
-            #estimate of PSF area
-            # psf_fac = np.pi*psf.calculateMomentRadius()**2
-            psf_fac = np.pi*(gaussian_fwhm_to_sigma*psf.calculateFWHM())**2
-            imd = np.expand_dims(np.expand_dims(im2.array,0),0)
+            # estimate of PSF area
+            psf_fac = np.pi * (gaussian_fwhm_to_sigma * psf.calculateFWHM())**2
+            imd = np.expand_dims(np.expand_dims(im2.array, 0), 0)
             sky_level = mean_sky_level(survey, filt).to_value('electron') # gain = 1
-            maskf = btk.metrics.utils.get_segmentation(imd, sky_level*psf_fac, sigma_noise=lvl)[0][0]
+            # segmentation mask using the fixed SNR threshold
+            maskf = btk.metrics.utils.get_segmentation(imd, sky_level * psf_fac, sigma_noise=snr_lvl)[0][0]
             # dilate the mask by the psf size
-            maskf = cv2.morphologyEx(maskf, cv2.MORPH_DILATE, SE)   
+            maskf = cv2.morphologyEx(maskf, cv2.MORPH_DILATE, se_kernel)   
             segs.append(maskf)
-        # add masks in separate bands
-        mask = np.clip(np.sum(segs,axis=0), a_min=0, a_max=1)
+        except Exception as e:
+            # assume no Galsim failures.
+            # For now, we create an empty mask to trigger rejection.
+            print(f"Galsim failed for {obj_idx} in {filt}! Below is the error:\n {e}")
+            segs.append(np.zeros((128, 128), dtype=bool))
 
-        # rejected obj if segm mask is empty
-        if np.sum(mask)==0 or np.sum(mask) < 12:
-            rejected_objs.append({
-                "obj_id": obj_id,
-                "obj_id_idx": j,
-                "reason": "empty_mask",
-                "ra": obj['ra'],
-                "dec": obj['dec'],
-                "category_id": 1 if obj['truth_type'] == 2 else 0,
-                "mag_i": obj['mag_i'],
-                "redshift": redshift,
-            })
-            continue
-        
-        bbox = get_bbox(mask)
-        x0 = bbox[2]
-        x1 = bbox[3]
-        y0 = bbox[0]
-        y1 = bbox[1]
-        
-        w = x1-x0
-        h = y1-y0
-        
-        bbox = [x-w/2, y-h/2, w, h]     
-
-        contours, hierarchy = cv2.findContours(
-                    (mask).astype(np.uint8), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
-                )
-
-
-        segmentation = []
-        for contour in contours:
-            # contour = [x1, y1, ..., xn, yn]
-            contour = contour.flatten()
-            if len(contour) > 4:
-                contour[::2] += (int(np.rint(x))-x0-w//2)
-                contour[1::2] += (int(np.rint(y))-y0-h//2)
-                segmentation.append(contour.tolist())
-        # No valid countors - rejected object
-        if len(segmentation) == 0:
-            rejected_objs.append({
-                "obj_id": obj_id,
-                "obj_id_idx": j,
-                "reason": "no_valid_contours",
-                "ra": obj['ra'],
-                "dec": obj['dec'],
-                "category_id": 1 if obj['truth_type'] == 2 else 0,
-                "mag_i": obj['mag_i'],
-                "redshift": redshift,
-            })
-            print(f"No valid contours for object {j}")
-            continue
-
-        obj = {
-            "obj_id": obj_id, # will be used to access specific obj's morphological info
-            "obj_id_idx": j, # idx within catalog
-            "bbox": bbox,
-            "area": w*h,
-            "bbox_mode": 1,
-            "segmentation": segmentation,
-            "category_id": 1 if obj['truth_type'] == 2 else 0,
-            "redshift": redshift,
-            "mag_i": obj['mag_i'] # ab mag
+    # add masks in separate bands
+    combined_mask = np.clip(np.sum(segs,axis=0), a_min=0, a_max=1)
+    obj_id = int(obj_entry['id']) if obj_entry['truth_type'] == 2 else int(obj_entry['cosmodc2_id'])
+    
+    # now when an obj is rejected, save its mask and store the path
+    def handle_rejection(reason):
+        mask_dir = os.path.join(rejected_mask_dir, tile, f"c{cutout_id}")
+        os.makedirs(mask_dir, exist_ok=True)
+        mask_path = os.path.join(mask_dir, f"mask_{obj_idx}.npy")
+        np.save(mask_path, combined_mask)
+        rejected_obj = {
+            'obj_id': obj_id,
+            'obj_truth_idx': obj_idx,
+            'category_id': 1 if obj_entry['truth_type'] == 2 else 0,
+            'ra': obj_entry['ra'],
+            'dec': obj_entry['dec'],
+            'redshift': obj_entry['redshift'],
+            'size_true': obj_entry['size_true'],
+            'ellipticity_1_true': obj_entry['ellipticity_1_true'],
+            'ellipticity_2_true': obj_entry['ellipticity_2_true'],
+            'reason': reason,
+            'mask_path': mask_path
         }
-        objs.append(obj)
-
-    ddict['annotations'] = objs
-    ddict['rejected_objs'] = rejected_objs
-
-    return ddict
-
-def get_num_processes():
-#     num_cpus = 8 # for jupyter notebook
-    num_cpus = int(os.environ.get('SLURM_CPUS_PER_TASK'))
-#     total_mem = 4 # GB for jupyter notebook
-    total_mem = int(os.environ.get('SLURM_MEM_PER_NODE')) / 1024
+        for filt in filters:
+            rejected_obj[f'mag_{filt}'] = obj_entry[f'mag_{filt}'] # AB mag values
+            rejected_obj[f'flux_{filt}'] = obj_entry[f'flux_{filt}'] # flux values (nJy)
+        return 'rejected', rejected_obj
     
-    # estimated mem per process
-    mem_per_process = 0.5  # GB
-    # num of processes
-    num_processes = int(total_mem // mem_per_process)
-    # optimal process count
-    num_optimal_processes = min(num_cpus, num_processes)
-#     print(num_optimal_processes)
-    # use at least 1/4 of CPUs but not less than 1
-    return max(num_optimal_processes, max(1, num_cpus // 4))
-#     return max(1, num_optimal_processes)
+    if np.sum(combined_mask) == 0:
+        return handle_rejection('empty_mask')
 
-def process_subpatch(sub_patch, truth_dict, filters, dirpath, survey, SE):
-#     print(f"\nProcessing Sub-Patch: {sub_patch}")
-    subpatch_metadata = []
-    all_rejected_objs = []
-    # grab each cutout and their corresponding truth info
-    for entry in truth_dict:
-        filename = dirpath + f"{sub_patch}/full_c{entry['image_id']}_{sub_patch[4:]}.npy"
-        img_shape = (entry['height'], entry['width']) # height, width
-        cat = pd.read_json(entry['obj_catalog'], orient='records')
-        dcut = dcut_reformat(cat)
-        ddict = create_metadata(img_shape, dcut, entry['image_id'], sub_patch, filename, survey, filters, SE, lvl=5)
+    if np.sum(combined_mask) < 12:
+        return handle_rejection('small_mask_12px')
+
+    bbox_coords = get_bbox(combined_mask)
+    if bbox_coords is None:
+        return handle_rejection('invalid_bbox') # Should be caught by empty mask, but just in case
+    
+    y0, y1, x0, x1 = bbox_coords
+    w, h = x1 - x0, y1 - y0
+    
+    # bbox relative to full cutout coordinates
+    cutout_x, cutout_y = int(obj_entry['cutout_x']), int(obj_entry['cutout_y'])
+    bbox = [cutout_x - w/2, cutout_y - h/2, w, h]
+
+    # contours for segmentation
+    contours, _ = cv2.findContours((combined_mask).astype(np.uint8), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    segmentation = []
+    for contour in contours:
+        contour = contour.flatten()
+        if len(contour) > 4: # Must have at least 3 points
+            # Adjust contour coordinates to be relative to the full cutout
+            contour[::2] += int(np.rint(cutout_x)) - (x0 + w//2)
+            contour[1::2] += int(np.rint(cutout_y)) - (y0 + h//2)
+            segmentation.append(contour.tolist())
+
+    if len(segmentation) == 0:
+        return handle_rejection('invalid_contours')
+
+    # successful ann
+    obj_md = {
+        'obj_id': obj_id,
+        'obj_truth_idx': obj_idx,     
+        'category_id': 1 if obj_entry['truth_type'] == 2 else 0, # 2 is star, 1 is galaxy truth_type
+        'bbox': bbox,
+        'bbox_mode': 1, # BoxMode.XYWH_ABS
+        'area': w * h,
+        'segmentation': segmentation,
+        'ra': obj_entry['ra'],
+        'dec': obj_entry['dec'],
+        'redshift': obj_entry['redshift'],
+        'size_true': obj_entry['size_true'],
+        'ellipticity_1_true': obj_entry['ellipticity_1_true'],
+        'ellipticity_2_true': obj_entry['ellipticity_2_true']  
+    }
+    for filt in filters:
+        obj_md[f'mag_{filt}'] = obj_entry[f'mag_{filt}'] # AB mag values
+        obj_md[f'flux_{filt}'] = obj_entry[f'flux_{filt}'] # flux values (nJy)
         
-        # storing rejected obs with img info
-        for obj in ddict['rejected_objs']:
-            obj['file_name'] = filename
-            obj['image_id'] = entry['image_id']
-            obj['subpatch'] = sub_patch
-        all_rejected_objs.extend(ddict['rejected_objs'])
-        # removing rejected objs from output since we will save them thru all_rejected_ibs 
-        del ddict['rejected_objs']
-        subpatch_metadata.append(ddict)
-    
-    df = pd.DataFrame(subpatch_metadata)
-#     output_file = f'/home/shared/hsc/roman_lsst/lsst_data/annotations/{sub_patch}.json'
-    output_file = f'/home/yse2/lsst_data/annotations/{sub_patch}.json'
-    df.to_json(output_file, orient='records')
-#     with open(output_file, 'w') as f:
-#         json.dump(subpatch_metadata, f, indent=2)
-    if all_rejected_objs:
-        rejected_df = pd.DataFrame(all_rejected_objs)
-        rejected_output_file = f'/home/yse2/lsst_data/rejected_objs/{sub_patch}_rejected.json'
-        rejected_df.to_json(rejected_output_file, orient='records')
-        print(f"Saved {len(all_rejected_objs)} rejected objects to {rejected_output_file}")
+    return 'success', obj_md
 
-    return f"Processed {sub_patch}, rejected {len(all_rejected_objs)} objects"
+def process_cutout(cutout_data, snr_lvl=5):
+    """Generates annotation dicts for all objects in a given cutout."""
+    # cutout file does not exist but we still need an empty entry
+    if cutout_data is None:
+        return {}, {}
+
+    truth_cat = cutout_data['truth_cat']
     
-def main(args):
-    filters = ['u','g','r','i','z','y']
-    dirpath = args.data_path
+    base_dict = {
+        "file_name": cutout_data['paths']['lsst_img'],
+        "image_id": cutout_data['cutout_id'],
+        "height": cutout_data['height'],
+        "width": cutout_data['width'],
+        "tile": cutout_data['tile'],
+        "det_cat_path": cutout_data['paths']['det_cat'],
+        "truth_cat_path": cutout_data['paths']['truth_cat'],
+        "matched_det_path": cutout_data['paths']['matched_det'],
+        "wcs": cutout_data['wcs']
+    }
+
+    if truth_cat.empty:
+        # empty dicts 
+        print(f"Skipping cutout {cutout_data['cutout_id']} with empty truth catalog.")
+        success_dict = {**base_dict, "annotations": []}
+        rejected_dict = {**base_dict, "rejected_objs": []}
+        return success_dict, rejected_dict
+
     survey = btk.survey.get_surveys("LSST")
-#     sub_patches = ['dc2_50.93_-42.0', 'dc2_51.34_-41.3']
-    sub_patches = [
-        'dc2_51.37_-38.3',
-        'dc2_51.53_-40.0',
-        'dc2_52.31_-41.6',
-        'dc2_52.93_-40.8',
-        'dc2_53.25_-41.8',
-        'dc2_53.75_-38.9',
-        'dc2_54.24_-38.3',
-        'dc2_54.31_-41.6',
-        'dc2_55.03_-41.9',
-        'dc2_56.06_-39.8'
-    ]
-    
-    #Dilates the masks by a kernel the size of the PSF 
-    #The psf variations are small between bands, so just using i-band is ok
+    # structuring element for mask dilation
+    # The psf variations are small between bands, so just using i-band is ok
     fwhm = survey.get_filter('i').psf.calculateFWHM()
-    sig = gaussian_fwhm_to_sigma*fwhm/.2
-    SE = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(2*sig),int(2*sig)))
-    
-    
-    print("\nReading in the Truth Catalogs for each subpatch")
-    print("------------------")
-    prepared_data = {}
-    for sub_patch in sub_patches:
-        with open(dirpath + f'{sub_patch}/{sub_patch}_info.json', 'r') as f:
-            truth_dict = json.load(f)
-        prepared_data[sub_patch] = truth_dict
-    
-    num_processes = get_num_processes()
-    print(f"Using {num_processes} processes")
-    
-    # partial funcs like in cs421!
-    process_subpatch_partial = partial(process_subpatch, filters=filters, dirpath=dirpath, survey=survey, SE=SE)
+    sig = gaussian_fwhm_to_sigma * fwhm / survey.pixel_scale.to_value("arcsec")
+    se_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(2 * sig), int(2 * sig)))
 
-    with multiprocessing.Pool(processes=10) as pool:
-        results = pool.starmap(process_subpatch_partial, prepared_data.items())
+    dcut = dcut_reformat(truth_cat)
     
-    for result in results:
-        print(result)
+    annotations = []
+    rejected_objs = []
+    for idx, obj in dcut.iterrows():
+        status, result_dict = process_object(obj, survey, se_kernel, idx, 
+                                             cutout_data['tile'], 
+                                             cutout_data['cutout_id'], 
+                                             snr_lvl)
+        if status == 'success':
+            annotations.append(result_dict)
+        else:
+            rejected_objs.append(result_dict)
     
+    success_dict = {**base_dict, "annotations": annotations}
+    rejected_dict = {**base_dict, "rejected_objs": rejected_objs}
+    
+    return success_dict, rejected_dict
+
+def process_single_cutout_wrapper(args):
+    """
+    A helper function to unpack args for use with multiprocessing.Pool
+    It loads and processes a single cutout
+    """
+    tile_name, cutout_id, snr_lvl, wcs_header = args
+    print(f"Processing {tile_name} | Cutout {cutout_id}...")
+    cutout_data = load_cutout_data(tile_name, cutout_id, wcs_header)
+    success_ddict, rejected_ddict = process_cutout(cutout_data, snr_lvl)
+    return success_ddict, rejected_ddict
+
+def process_and_save_tile(tile_name, snr_lvl=5):
+    """
+    Processes all cutouts for a given tile in parallel and saves the results.
+    """
+    print(f"--- Starting parallel processing for tile: {tile_name} ---")
+    
+    # lookup dict for wcs headers
+    wcs_df = pd.read_json(f"{lsst_dir}dc2_{tile_name}/wcs_{tile_name}.json")
+    wcs_lookup = wcs_df.set_index('cutout_id')['wcs_header'].to_dict()
+
+    # args for each task
+    tasks = [(tile_name, cutout_id, snr_lvl, wcs_lookup.get(cutout_id, None)) 
+             for cutout_id in range(cutouts_per_tile)]
+    
+    num_processes = int(os.environ.get("SLURM_CPUS_ON_NODE", 16))
+    print(f"Creating a pool of {num_processes} worker processes.")
+    with mp.Pool(processes=num_processes) as pool:
+        # pool.map distributes the tasks and blocks until all are complete
+        results = pool.map(process_single_cutout_wrapper, tasks)
+        pool.close()
+        pool.join()
+
+    tile_md = [res[0] for res in results if res[0]]
+    tile_rejected_md = [res[1] for res in results if res[1]]
+
+    print(f"\n--- Finished processing for tile: {tile_name} ---")
+    print(f"Aggregated {len(tile_md)} successful annotation sets.")
+    print(f"Aggregated {len(tile_rejected_md)} rejected object sets.")
+
+    output_dir_ann = f"./lsst_data/annotations_lvl{snr_lvl}/"
+    output_dir_rej = f"./lsst_data/rejected_objs_lvl{snr_lvl}/"
+    os.makedirs(output_dir_ann, exist_ok=True)
+    os.makedirs(output_dir_rej, exist_ok=True)
+
+    ann_path = os.path.join(output_dir_ann, f"dc2_{tile_name}.json")
+    rej_path = os.path.join(output_dir_rej, f"dc2_{tile_name}.json")
+
+    if tile_md:
+        print(f"Saving successful annotations to {ann_path}")
+        pd.DataFrame(tile_md).to_json(ann_path, orient='records', indent=4)
+    if tile_rejected_md:
+        print(f"Saving rejected objects to {rej_path}")
+        pd.DataFrame(tile_rejected_md).to_json(rej_path, orient='records', indent=4)
+
 if __name__ == "__main__":
-    start_time = time.time()
-    os.environ["OMP_NUM_THREADS"] = "1" # ensures each process created by mp uses only one thread
-    args = parse_args()
-    main(args)
-    end_time = time.time()
-    print(end_time - start_time, " seconds")
-    # 1022.3751366138458 s ~ 17 mins for one subpatch that had 280 entries
+    warnings.filterwarnings("ignore", category=RuntimeWarning)
+    warnings.filterwarnings("ignore", category=UserWarning)
 
-# def add_roman_to_lsst(file, lsst_img, root_dir):
-#     # grabbing selected Roman image data
-#     curr_rimg_filename = file.replace('./roman_data/', root_dir)
-#     roman_im = np.load(curr_rimg_filename)
-#     # print("Old File: ", file)
+    parser = argparse.ArgumentParser(description="Process a single LSST DC2 tile for ground truth annotations.")
+    parser.add_argument("tile_name", type=str, help="The name of the tile to process (e.g., '53.25_-41.8').")
+    parser.add_argument("--snr", type=int, default=5, help="SNR level (default: 5)")
+    args = parser.parse_args()
     
-#     new_filename = file.replace('truth', 'truth-combined')
-#     cutout_filename = (re.search(r'roman_data/(.+)', new_filename)).group(1)
-#     # print(cutout_filename)
-#     full_cutout_filename = f'{root_dir}{cutout_filename}'
-#     # print("Roman: ", roman_im.shape)
-#     # print(roman_im[0, :, :])
-#     # print("LSST: ", np.asarray(upsampled_lsst_imgs_lz).shape)
-#     # print(np.asarray(upsampled_lsst_imgs_lz)[-1, :, :])
+    start_time = time.time()
+    process_and_save_tile(args.tile_name, snr_lvl=args.snr)
+    end_time = time.time()
     
-#     combined_data = np.concatenate((roman_im, upsampled_lsst_img), axis=0)
-#     np.save(full_cutout_filename, combined_data)
+    print(f"\nPipeline finished for tile {args.tile_name}. Took {end_time - start_time:.2f} seconds.")
