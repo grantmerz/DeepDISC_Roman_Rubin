@@ -4,7 +4,7 @@
 
 **For HAL, OPEN THIS FILE WITH MARKDOWN READER in Jupyter Lab or Preview with Markdown Reader in HAL**
 
-This section will explain hte structure and purpose of the folders/files in this repo.
+This section will explain the structure and purpose of the folders/files in this repo.
 
 As of 11/13/24 and based on [LSST/Rubin Project Outline](https://docs.google.com/document/d/1hFqOK-6hv6E2UjG0CJjX5IfqadrR0yOK_ekBkm2A1ns/edit?pli=1&tab=t.0#heading=h.kqvlnv4vmq2p), the most relevant notebooks and scripts are `metrics and metrics_v2` notebooks and `lsst_anns.py`.
 
