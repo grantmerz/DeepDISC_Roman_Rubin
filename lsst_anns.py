@@ -306,7 +306,7 @@ def load_cutout_data(tile, cutout_id, wcs_header=None):
         print(f"Error loading cutout {cutout_id} from tile {tile}: {e}")
         return None
 
-def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise, snr_lvl=5,):
+def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise, snr_lvl=5):
     """
     Processes a single object from the truth catalog to generate an annotation or a rejection log.
     """
