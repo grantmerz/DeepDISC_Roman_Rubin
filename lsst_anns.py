@@ -130,7 +130,7 @@ def get_star_gsparams(mag, flux, noise):
     return gsparams, isbright
 
 
-def make_star(entry, survey, filt, noise):
+def make_star(entry, filt, noise):
     """
     Parameters
     ----------
@@ -163,7 +163,7 @@ def make_star(entry, survey, filt, noise):
     )
     return star, gsparams, flux
 
-def make_galaxy(entry, survey, filt, no_disk= False, no_bulge = False, no_agn = True):
+def make_galaxy(entry, filt, no_disk= False, no_bulge = False, no_agn = True):
     components = []
     #total_flux = mag2counts(entry[filt.name + "_ab"], survey, filt).to_value("electron")
     delta_m = entry[filt.name + "_ab"] - 27
@@ -229,7 +229,7 @@ def make_im(entry, survey, filt, noise, nx=128, ny=128, get_gso=False):
     obj_type = entry['truth_type'] # 1 for galaxies, 2 for stars
     im = None
     if obj_type == 1:
-        gal = make_galaxy(entry, survey, survey.get_filter(filt))
+        gal = make_galaxy(entry, survey.get_filter(filt))
         gal = gal.shear(g1=entry["g1"], g2=entry["g2"])
         conv_gal = galsim.Convolve(gal, psf)
 #         im = conv_gal.drawImage(
@@ -240,7 +240,7 @@ def make_im(entry, survey, filt, noise, nx=128, ny=128, get_gso=False):
         if get_gso:
             return conv_gal, psf
     else:
-        star, gsparams, flux = make_star(entry, survey, survey.get_filter(filt))
+        star, gsparams, flux = make_star(entry, survey.get_filter(filt),noise)
         max_n_photons = 10_000_000
         # 0 means use the flux for n_photons 
         n_photons = 0 if flux < max_n_photons else max_n_photons
