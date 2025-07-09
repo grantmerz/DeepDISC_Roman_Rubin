@@ -27,7 +27,9 @@ print(sep.__version__)
 import galsim
 import btk
 from astropy.stats import gaussian_fwhm_to_sigma
-from galcheat.utilities import mag2counts, mean_sky_level
+#from galcheat.utilities import mag2counts, mean_sky_level
+from astropy.stats import sigma_clipped_stats
+
 
 # --- Configuration ---
 root_dir = './lsst_data/'
@@ -148,7 +150,9 @@ def make_star(entry, survey, filt):
     #https://pipelines.lsst.io/v/DM-22499/cpp-api/file/_photo_calib_8h.html
 #     mag = -2.5*np.log10(entry[f'flux_{filt.name}']*1e-9/(1e23*10**(48.6/-2.5)))
     mag = entry[f'mag_{filt.name}']
-    flux = mag2counts(mag,survey,filt).to_value("electron")
+    #flux = mag2counts(mag,survey,filt).to_value("electron")
+    delta_m = mag - 27
+    flux = 10 ** (-delta_m / 2.5)
 #     flux = entry[f'flux_{filt.name}']
     noise = mean_sky_level(survey, filt).to_value('electron') # gain = 1
     gsparams, isbright = get_star_gsparams(mag, flux, noise)
@@ -161,7 +165,9 @@ def make_star(entry, survey, filt):
 
 def make_galaxy(entry, survey, filt, no_disk= False, no_bulge = False, no_agn = True):
     components = []
-    total_flux = mag2counts(entry[filt.name + "_ab"], survey, filt).to_value("electron")
+    #total_flux = mag2counts(entry[filt.name + "_ab"], survey, filt).to_value("electron")
+    delta_m = entry[filt.name + "_ab"] - 27
+    total_flux = 10 ** (-delta_m / 2.5)
     # Calculate the flux of each component in detected electrons.
     total_fluxnorm = entry["fluxnorm_disk_"+filt.name] + entry["fluxnorm_bulge_"+filt.name] + entry["fluxnorm_agn_"+filt.name]
     disk_flux = 0.0 if no_disk else entry["fluxnorm_disk_"+filt.name] / total_fluxnorm * total_flux
@@ -219,7 +225,7 @@ def make_galaxy(entry, survey, filt, no_disk= False, no_bulge = False, no_agn = 
 
 def make_im(entry, survey, filt, nx=128, ny=128, get_gso=False):
     psf = survey.get_filter(filt).psf
-    sky_level = mean_sky_level(survey, filt).to_value('electron') # gain = 1
+    #sky_level = mean_sky_level(survey, filt).to_value('electron') # gain = 1
     obj_type = entry['truth_type'] # 1 for galaxies, 2 for stars
     im = None
     if obj_type == 1:
@@ -281,6 +287,8 @@ def load_cutout_data(tile, cutout_id, wcs_header=None):
     try:
         lsst_img = np.load(paths['lsst_img'])
         height, width = lsst_img.shape[1], lsst_img.shape[2]
+        #estimate sig-clipped background noise
+        noise = np.array([sigma_clipped_stats(img)[-1] for img in lsst_img])
         del lsst_img
         # load truth cat if it exists, otherwise create empty dfs
         truth_cat = pd.read_json(paths['truth_cat'], orient='records') if os.path.exists(paths['truth_cat']) else pd.DataFrame()
@@ -291,13 +299,14 @@ def load_cutout_data(tile, cutout_id, wcs_header=None):
             'width': width,
             'height': height,
             'wcs': wcs_header,
-            'paths': paths
+            'paths': paths,
+            'noise': noise
         }
     except Exception as e:
         print(f"Error loading cutout {cutout_id} from tile {tile}: {e}")
         return None
 
-def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, snr_lvl=5):
+def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise, snr_lvl=5,):
     """
     Processes a single object from the truth catalog to generate an annotation or a rejection log.
     """
@@ -305,7 +314,7 @@ def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, snr_l
     segs = []
 
     # simulate the object and create segmentation masks for each band
-    for filt in filters:
+    for i,filt in enumerate(filters):
         try:
             # isolated image of object
             im_conv, psf = make_im(obj_entry, survey, filt, nx=128, ny=128, get_gso=True)
@@ -314,11 +323,15 @@ def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, snr_l
             image = galsim.Image(128, 128, scale=survey.pixel_scale.to_value("arcsec"))
             im2 = im_conv2.drawImage(image, scale=survey.pixel_scale.to_value("arcsec"), method='no_pixel')
             # estimate of PSF area
-            psf_fac = np.pi * (gaussian_fwhm_to_sigma * psf.calculateFWHM())**2
+            #psf_fac = np.pi * (gaussian_fwhm_to_sigma * psf.calculateFWHM())**2
+            psfim = psf.drawImage(nx=64,ny=64)
+            psf_fac = np.sum(psfim.array**2)
             imd = np.expand_dims(np.expand_dims(im2.array, 0), 0)
-            sky_level = mean_sky_level(survey, filt).to_value('electron') # gain = 1
+            #sky_level = mean_sky_level(survey, filt).to_value('electron') # gain = 1
+            #noise from the cutout image
+            var = noise[i]**2
             # segmentation mask using the fixed SNR threshold
-            maskf = btk.metrics.utils.get_segmentation(imd, sky_level * psf_fac, sigma_noise=snr_lvl)[0][0]
+            maskf = btk.metrics.utils.get_segmentation(imd, var * psf_fac, sigma_noise=snr_lvl)[0][0]
             # dilate the mask by the psf size
             maskf = cv2.morphologyEx(maskf, cv2.MORPH_DILATE, se_kernel)   
             segs.append(maskf)
@@ -451,7 +464,7 @@ def process_cutout(cutout_data, snr_lvl=5):
         status, result_dict = process_object(obj, survey, se_kernel, idx, 
                                              cutout_data['tile'], 
                                              cutout_data['cutout_id'], 
-                                             snr_lvl)
+                                             cutout_data['noise'],snr_lvl)
         if status == 'success':
             annotations.append(result_dict)
         else:
