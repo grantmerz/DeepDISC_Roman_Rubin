@@ -130,7 +130,7 @@ def get_star_gsparams(mag, flux, noise):
     return gsparams, isbright
 
 
-def make_star(entry, survey, filt):
+def make_star(entry, survey, filt, noise):
     """
     Parameters
     ----------
@@ -154,7 +154,7 @@ def make_star(entry, survey, filt):
     delta_m = mag - 27
     flux = 10 ** (-delta_m / 2.5)
 #     flux = entry[f'flux_{filt.name}']
-    noise = mean_sky_level(survey, filt).to_value('electron') # gain = 1
+    #noise = mean_sky_level(survey, filt).to_value('electron') # gain = 1
     gsparams, isbright = get_star_gsparams(mag, flux, noise)
     star = galsim.Gaussian(
         fwhm=1.0e-4,
@@ -223,7 +223,7 @@ def make_galaxy(entry, survey, filt, no_disk= False, no_bulge = False, no_agn = 
     profile = galsim.Add(components)
     return profile
 
-def make_im(entry, survey, filt, nx=128, ny=128, get_gso=False):
+def make_im(entry, survey, filt, noise, nx=128, ny=128, get_gso=False):
     psf = survey.get_filter(filt).psf
     #sky_level = mean_sky_level(survey, filt).to_value('electron') # gain = 1
     obj_type = entry['truth_type'] # 1 for galaxies, 2 for stars
@@ -264,7 +264,7 @@ def make_im(entry, survey, filt, nx=128, ny=128, get_gso=False):
 def get_bbox(mask):
     rows = np.any(mask, axis=1)
     cols = np.any(mask, axis=0)
-    rmin, rmasx = np.where(rows)[0][[0, -1]]
+    rmin, rmax = np.where(rows)[0][[0, -1]]
     cmin, cmax = np.where(cols)[0][[0, -1]]
 
     return rmin-4, rmax+4, cmin-4, cmax+4
@@ -317,7 +317,7 @@ def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise
     for i,filt in enumerate(filters):
         try:
             # isolated image of object
-            im_conv, psf = make_im(obj_entry, survey, filt, nx=128, ny=128, get_gso=True)
+            im_conv, psf = make_im(obj_entry, survey, filt, noise[i], nx=128, ny=128, get_gso=True)
             #convolve by the psf and threshold with noise multiplied by psf area (Bosch 2018)
             im_conv2 = galsim.Convolve(im_conv, psf)
             image = galsim.Image(128, 128, scale=survey.pixel_scale.to_value("arcsec"))
