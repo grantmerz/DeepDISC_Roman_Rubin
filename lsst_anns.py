@@ -26,25 +26,17 @@ print(sep.__version__)
 
 import galsim
 import btk
-from astropy.stats import gaussian_fwhm_to_sigma
-#from galcheat.utilities import mag2counts, mean_sky_level
-from astropy.stats import sigma_clipped_stats
+from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
 
 
 # --- Configuration ---
 root_dir = './lsst_data/'
 lsst_dir = f'{root_dir}truth/'
-rejected_mask_dir = f'{root_dir}rejected_objs_lvl5/rejected_masks/'
 
 cutouts_per_tile = 225 # we shld prob just dynamically calculate this by looking through the truth folders
 seed = 8312
 rng = np.random.RandomState(seed)
 grng = galsim.BaseDeviate(rng.randint(0, 2**30))
-
-
-class SourceNotVisible(Exception):
-    """Raised when source has no visible flux"""
-    pass
 
 def e1e2_to_ephi(e1,e2):
     pa = np.arctan(e2/e1)
@@ -78,22 +70,32 @@ def dcut_reformat(cat):
     
     return cat
 
+class SourceNotVisible(Exception):
+    """Custom exception for objects with zero flux"""
+    pass
+
 def get_star_gsparams(mag, flux, noise):
     """
-    Get appropriate gsparams given flux and noise
+    Gets appropriate GSParams for a star given flux and noise
 
     Parameters
     ----------
-    mag: float
+    mag : float
         mag of star
-    flux: float
-        flux of star
-    noise: float
-        noise of image
+    flux : float
+        flux of star in electrons
+    noise : float
+        Mean sky background level in electrons. In background-limited
+        scenarios, this value serves as a proxy for the noise variance
+        (i.e., noise_rms^2) and is used to set Fourier-space accuracy parameters
 
     Returns
-    --------
-    GSParams, isbright where isbright is true for stars with mag less than 18
+    -------
+    galsim.GSParams or None
+        An appropriate GSParams object for the star, or None if the star is
+        not bright enough to require special handling
+    bool
+        A boolean flag, `isbright`, which is True if mag < 18
     """
     do_thresh = do_acc = False
     if mag < 18:
@@ -129,32 +131,41 @@ def get_star_gsparams(mag, flux, noise):
 
     return gsparams, isbright
 
-
 def make_star(entry, filt, noise):
     """
+    Builds a star model as a GalSim GSObject.
+
+    The star is modeled as a very small Gaussian to approximate a delta
+    function, which can then be convolved with a PSF. Flux is calculated
+    directly from the magnitude with a zeropoint of 27.
+
     Parameters
     ----------
-    survey: WLDeblendSurvey or BasicSurvey
-        The survey object
-    band: string
-        Band string, e.g. 'r'
-    i: int
-        Index of object
-    noise: float
-        The noise level, needed for setting gsparams
+    entry : dict-like
+        A catalog entry containing properties of the object, including
+        the magnitude in the specified filter (e.g., `entry['mag_g']`).
+    filt : galsim.Bandpass
+        The filter bandpass object.
+    noise : float
+        The empirically measured background noise (RMS) in electrons
 
     Returns
     -------
     galsim.GSObject
-    """    
-    #https://pipelines.lsst.io/v/DM-22499/cpp-api/file/_photo_calib_8h.html
-#     mag = -2.5*np.log10(entry[f'flux_{filt.name}']*1e-9/(1e23*10**(48.6/-2.5)))
+        The star model as a GalSim object.
+    galsim.GSParams or None
+        The GSParams used for the star model.
+    float
+        The calculated flux of the star in electrons.
+    """
+    # https://pipelines.lsst.io/v/DM-22499/cpp-api/file/_photo_calib_8h.html
+    # mag = -2.5*np.log10(entry[f'flux_{filt.name}']*1e-9/(1e23*10**(48.6/-2.5)))
     mag = entry[f'mag_{filt.name}']
-    #flux = mag2counts(mag,survey,filt).to_value("electron")
-    delta_m = mag - 27
+    # For zeropoint mag:
+    # https://community.lsst.org/t/dp0-zeropoints-adding-poisson-noise/8230
+    # https://www.aanda.org/articles/aa/pdf/2025/03/aa52119-24.pdf (Pg. 4)
+    delta_m = mag - 27 # mag 27 is zeropoint for LSST coadds
     flux = 10 ** (-delta_m / 2.5)
-#     flux = entry[f'flux_{filt.name}']
-    #noise = mean_sky_level(survey, filt).to_value('electron') # gain = 1
     gsparams, isbright = get_star_gsparams(mag, flux, noise)
     star = galsim.Gaussian(
         fwhm=1.0e-4,
@@ -163,10 +174,39 @@ def make_star(entry, filt, noise):
     )
     return star, gsparams, flux
 
-def make_galaxy(entry, filt, no_disk= False, no_bulge = False, no_agn = True):
+def make_galaxy(entry, filt, no_disk=False, no_bulge=False, no_agn=True):
+    """
+    Builds a galaxy model as a composite GalSim GSObject.
+
+    The galaxy can be composed of a disk (Exponential), a bulge
+    (DeVaucouleurs), and an AGN (point source). The flux of each component
+    is scaled based on the total magnitude, which is converted to flux
+    with a zeropoint of 27.
+
+    Parameters
+    ----------
+    entry : dict-like
+        Catalog entry with galaxy properties (flux normalizations, sizes,
+        position angle, etc.).
+    filt : galsim.Bandpass
+        The filter bandpass object.
+    no_disk : bool, optional
+        If True, the disk component will not be added. Defaults to False.
+    no_bulge : bool, optional
+        If True, the bulge component will not be added. Defaults to False.
+    no_agn : bool, optional
+        If True, the AGN component will not be added. Defaults to True.
+
+    Returns
+    -------
+    galsim.GSObject
+        The composite galaxy profile as a single GalSim object.
+    """
     components = []
-    #total_flux = mag2counts(entry[filt.name + "_ab"], survey, filt).to_value("electron")
-    delta_m = entry[filt.name + "_ab"] - 27
+    mag = entry[filt.name + "_ab"]
+    # https://community.lsst.org/t/dp0-zeropoints-adding-poisson-noise/8230
+    # https://www.aanda.org/articles/aa/pdf/2025/03/aa52119-24.pdf (Pg. 4)
+    delta_m = mag - 27
     total_flux = 10 ** (-delta_m / 2.5)
     # Calculate the flux of each component in detected electrons.
     total_fluxnorm = entry["fluxnorm_disk_"+filt.name] + entry["fluxnorm_bulge_"+filt.name] + entry["fluxnorm_agn_"+filt.name]
@@ -176,14 +216,13 @@ def make_galaxy(entry, filt, no_disk= False, no_bulge = False, no_agn = True):
 
     if disk_flux + bulge_flux + agn_flux == 0:
         raise SourceNotVisible
-
+    
+    pa = np.pi*entry['position_angle_true_dc2']/180
     if disk_flux > 0:
         a_d, b_d = entry["a_d"], entry["b_d"]
-        disk_hlr_arcsecs=entry['size_disk_true']
+        disk_hlr_arcsecs=a_d
         
-        
-        disk_q = entry['size_minor_disk_true']/entry['size_disk_true']
-        pa = np.pi*entry['position_angle_true_dc2']/180
+        disk_q = b_d/a_d
         
         epsilon_disk = (1 - disk_q) / (1 + disk_q)
         
@@ -196,16 +235,11 @@ def make_galaxy(entry, filt, no_disk= False, no_bulge = False, no_agn = True):
         
         components.append(disk)
         
-        
     if bulge_flux > 0:
         a_b, b_b = entry["a_b"], entry["b_b"]
         bulge_hlr_arcsecs = np.sqrt(a_b * b_b)
-
-        bulge_q = entry['size_minor_bulge_true']/entry['size_bulge_true']
-
-        pa = np.pi*entry['position_angle_true_dc2']/180
-
         
+        bulge_q = b_b/a_b
         epsilon_bulge = (1 - bulge_q) / (1 + bulge_q)
         
         e1_bulge = epsilon_bulge * np.cos(2 * pa)
@@ -223,51 +257,63 @@ def make_galaxy(entry, filt, no_disk= False, no_bulge = False, no_agn = True):
     profile = galsim.Add(components)
     return profile
 
-def make_im(entry, survey, filt, noise, nx=128, ny=128, get_gso=False):
+def convolve_source(entry, survey, filt, noise):
+    """
+    Builds a GalSim model for an object and convolves it with the PSF
+
+    This function determines if the object is a star or galaxy from the
+    `truth_type` key in the entry. It builds the appropriate model, applies
+    gravitational lensing shear if it is a galaxy, and returns the final
+    object convolved with the survey's PSF for the given filter. This is the
+    idealized, noiseless appearance of the object as viewed by the telescope.
+
+    Parameters
+    ----------
+    entry : dict-like
+        A catalog entry containing properties of the object. Must include
+        'truth_type' (1 for galaxy, 2 for star).
+    survey : WLDeblendSurvey or BasicSurvey
+        The survey object, providing access to the PSF.
+    filt : str
+        The name of the filter band (e.g., 'i')
+    noise : float
+        The empirically measured background noise (RMS), passed to make_star
+    
+    Returns
+    -------
+    galsim.GSObject
+        The final, convolved GalSim object
+    galsim.GSObject
+        The PSF object used for the convolution
+    """
     psf = survey.get_filter(filt).psf
-    #sky_level = mean_sky_level(survey, filt).to_value('electron') # gain = 1
     obj_type = entry['truth_type'] # 1 for galaxies, 2 for stars
-    im = None
+
     if obj_type == 1:
         gal = make_galaxy(entry, survey.get_filter(filt))
         gal = gal.shear(g1=entry["g1"], g2=entry["g2"])
         conv_gal = galsim.Convolve(gal, psf)
-#         im = conv_gal.drawImage(
-#             nx=nx,
-#             ny=ny,
-#             scale=survey.pixel_scale.to_value("arcsec")
-#         )
-        if get_gso:
-            return conv_gal, psf
-    else:
-        star, gsparams, flux = make_star(entry, survey.get_filter(filt),noise)
-        max_n_photons = 10_000_000
-        # 0 means use the flux for n_photons 
-        n_photons = 0 if flux < max_n_photons else max_n_photons
-        # n_photons = 0 if entry[f'flux_{filt}'] < max_n_photons else max_n_photons
-        conv_star = galsim.Convolve(star, psf)
-#         im = conv_star.drawImage(
-#             nx=nx,
-#             ny=ny,
-#             scale=survey.pixel_scale.to_value("arcsec"),
-#             method="phot",
-#             n_photons=n_photons,
-#             poisson_flux=True,
-#             maxN=1_000_000,  # shoot in batches this size
-#             rng=grng
-#         )
-        if get_gso:
-            return conv_star, psf
-    return im, psf
+        return conv_gal, psf
+    
+    star, _, _ = make_star(entry, survey.get_filter(filt), noise)
+    conv_star = galsim.Convolve(star, psf)
+    return conv_star, psf
 
 # uses combined mask
 def get_bbox(mask):
+    """
+    Calculates the bounding box of a mask. Returns None if the mask is empty.
+    """
+    if not np.any(mask):
+        print("No bbox because mask is empty!")
+        return None
     rows = np.any(mask, axis=1)
     cols = np.any(mask, axis=0)
     rmin, rmax = np.where(rows)[0][[0, -1]]
     cmin, cmax = np.where(cols)[0][[0, -1]]
 
     return rmin-4, rmax+4, cmin-4, cmax+4
+
 
 def load_cutout_data(tile, cutout_id, wcs_header=None):
     """Load essential truth catalog data for a specific cutout"""
@@ -287,7 +333,6 @@ def load_cutout_data(tile, cutout_id, wcs_header=None):
     try:
         lsst_img = np.load(paths['lsst_img'])
         height, width = lsst_img.shape[1], lsst_img.shape[2]
-        #estimate sig-clipped background noise
         noise = np.array([sigma_clipped_stats(img)[-1] for img in lsst_img])
         del lsst_img
         # load truth cat if it exists, otherwise create empty dfs
@@ -306,51 +351,57 @@ def load_cutout_data(tile, cutout_id, wcs_header=None):
         print(f"Error loading cutout {cutout_id} from tile {tile}: {e}")
         return None
 
-def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise, snr_lvl=5):
+
+def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise, rejected_mask_dir, snr_lvl=5):
     """
     Processes a single object from the truth catalog to generate an annotation or a rejection log.
     """
     filters = ['u', 'g', 'r', 'i', 'z', 'y']
     segs = []
-
     # simulate the object and create segmentation masks for each band
-    for i,filt in enumerate(filters):
+    for i, filt in enumerate(filters):
         try:
             # isolated image of object
-            im_conv, psf = make_im(obj_entry, survey, filt, noise[i], nx=128, ny=128, get_gso=True)
+            conv_obj, psf = convolve_source(obj_entry, survey, filt, noise[i])
             #convolve by the psf and threshold with noise multiplied by psf area (Bosch 2018)
-            im_conv2 = galsim.Convolve(im_conv, psf)
+            conv2_obj = galsim.Convolve(conv_obj, psf)
             image = galsim.Image(128, 128, scale=survey.pixel_scale.to_value("arcsec"))
-            im2 = im_conv2.drawImage(image, scale=survey.pixel_scale.to_value("arcsec"), method='no_pixel')
+            im = conv2_obj.drawImage(image, scale=survey.pixel_scale.to_value("arcsec"), method='no_pixel')
             # estimate of PSF area
-            #psf_fac = np.pi * (gaussian_fwhm_to_sigma * psf.calculateFWHM())**2
-            psfim = psf.drawImage(nx=64,ny=64)
-            psf_fac = np.sum(psfim.array**2)
-            imd = np.expand_dims(np.expand_dims(im2.array, 0), 0)
-            #sky_level = mean_sky_level(survey, filt).to_value('electron') # gain = 1
-            #noise from the cutout image
+            psf_img = psf.drawImage(nx=64, ny=64)
+            psf_fac = np.sum(psf_img.array**2)
+            imd = np.expand_dims(np.expand_dims(im.array, 0), 0)
             var = noise[i]**2
             # segmentation mask using the fixed SNR threshold
             maskf = btk.metrics.utils.get_segmentation(imd, var * psf_fac, sigma_noise=snr_lvl)[0][0]
             # dilate the mask by the psf size
             maskf = cv2.morphologyEx(maskf, cv2.MORPH_DILATE, se_kernel)   
             segs.append(maskf)
+        
+        except SourceNotVisible:
+            # runs if the source's flux was zero for this filter
+            print(f"Cutout ({cutout_id}): Object {obj_idx} not visible in filter {filt}. Flux is zero! Skipping.")
+            pass
+        
         except Exception as e:
-            # assume no Galsim failures.
+            # galsim fails, for example, when the star has a really high flux meaning the FFT size will be massive
+            print(f"Cutout ({cutout_id}): Galsim failed for {obj_idx} in {filt}! Below is the error:\n {e}")
+            pass
             # For now, we create an empty mask to trigger rejection.
-            print(f"Galsim failed for {obj_idx} in {filt}! Below is the error:\n {e}")
-            segs.append(np.zeros((128, 128), dtype=bool))
-
-    # add masks in separate bands
-    combined_mask = np.clip(np.sum(segs,axis=0), a_min=0, a_max=1)
+            # segs.append(np.zeros((128, 128), dtype=bool))
+    
     obj_id = int(obj_entry['id']) if obj_entry['truth_type'] == 2 else int(obj_entry['cosmodc2_id'])
     
     # now when an obj is rejected, save its mask and store the path
-    def handle_rejection(reason):
-        mask_dir = os.path.join(rejected_mask_dir, tile, f"c{cutout_id}")
-        os.makedirs(mask_dir, exist_ok=True)
-        mask_path = os.path.join(mask_dir, f"mask_{obj_idx}.npy")
-        np.save(mask_path, combined_mask)
+    def handle_rejection(reason, galsim_fail=False):
+        if galsim_fail:
+            mask_path = None
+        else:
+            mask_dir = os.path.join(rejected_mask_dir, tile, f"c{cutout_id}")
+            os.makedirs(mask_dir, exist_ok=True)
+            mask_path = os.path.join(mask_dir, f"mask_{obj_idx}.npy")
+            np.save(mask_path, combined_mask)
+        
         rejected_obj = {
             'obj_id': obj_id,
             'obj_truth_idx': obj_idx,
@@ -368,6 +419,13 @@ def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise
             rejected_obj[f'mag_{filt}'] = obj_entry[f'mag_{filt}'] # AB mag values
             rejected_obj[f'flux_{filt}'] = obj_entry[f'flux_{filt}'] # flux values (nJy)
         return 'rejected', rejected_obj
+    
+    if segs:
+        # add masks in separate bands
+        combined_mask = np.clip(np.sum(segs,axis=0), a_min=0, a_max=1)
+    else:
+        combined_mask = None # will only happens if galsim fails in all filters
+        return handle_rejection('galsim_fail', galsim_fail=True)
     
     if np.sum(combined_mask) == 0:
         return handle_rejection('empty_mask')
@@ -422,7 +480,7 @@ def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise
         
     return 'success', obj_md
 
-def process_cutout(cutout_data, snr_lvl=5):
+def process_cutout(cutout_data, rejected_mask_dir, snr_lvl=5):
     """Generates annotation dicts for all objects in a given cutout."""
     # cutout file does not exist but we still need an empty entry
     if cutout_data is None:
@@ -461,10 +519,12 @@ def process_cutout(cutout_data, snr_lvl=5):
     annotations = []
     rejected_objs = []
     for idx, obj in dcut.iterrows():
-        status, result_dict = process_object(obj, survey, se_kernel, idx, 
-                                             cutout_data['tile'], 
-                                             cutout_data['cutout_id'], 
-                                             cutout_data['noise'],snr_lvl)
+        status, result_dict = process_object(obj, survey, se_kernel, obj_idx=idx, 
+                                             tile=cutout_data['tile'], 
+                                             cutout_id=cutout_data['cutout_id'], 
+                                             noise=cutout_data['noise'],
+                                             rejected_mask_dir=rejected_mask_dir,
+                                             snr_lvl=snr_lvl)
         if status == 'success':
             annotations.append(result_dict)
         else:
@@ -474,16 +534,17 @@ def process_cutout(cutout_data, snr_lvl=5):
     rejected_dict = {**base_dict, "rejected_objs": rejected_objs}
     
     return success_dict, rejected_dict
-
+    
 def process_single_cutout_wrapper(args):
     """
     A helper function to unpack args for use with multiprocessing.Pool
     It loads and processes a single cutout
     """
-    tile_name, cutout_id, snr_lvl, wcs_header = args
+    tile_name, cutout_id, snr_lvl, wcs_header, rejected_mask_dir = args
     print(f"Processing {tile_name} | Cutout {cutout_id}...")
+    
     cutout_data = load_cutout_data(tile_name, cutout_id, wcs_header)
-    success_ddict, rejected_ddict = process_cutout(cutout_data, snr_lvl)
+    success_ddict, rejected_ddict = process_cutout(cutout_data, rejected_mask_dir, snr_lvl)
     return success_ddict, rejected_ddict
 
 def process_and_save_tile(tile_name, snr_lvl=5):
@@ -496,8 +557,14 @@ def process_and_save_tile(tile_name, snr_lvl=5):
     wcs_df = pd.read_json(f"{lsst_dir}dc2_{tile_name}/wcs_{tile_name}.json")
     wcs_lookup = wcs_df.set_index('cutout_id')['wcs_header'].to_dict()
 
+    output_dir_ann = f"./lsst_data/annotations_lvl{snr_lvl}/"
+    output_dir_rej = f"./lsst_data/rejected_objs_lvl{snr_lvl}/"
+    rejected_mask_dir = f"{output_dir_rej}rejected_masks/"
+    os.makedirs(output_dir_ann, exist_ok=True)
+    os.makedirs(output_dir_rej, exist_ok=True)
+    
     # args for each task
-    tasks = [(tile_name, cutout_id, snr_lvl, wcs_lookup.get(cutout_id, None)) 
+    tasks = [(tile_name, cutout_id, snr_lvl, wcs_lookup.get(cutout_id, None), rejected_mask_dir) 
              for cutout_id in range(cutouts_per_tile)]
     
     num_processes = int(os.environ.get("SLURM_CPUS_ON_NODE", 16))
@@ -514,11 +581,6 @@ def process_and_save_tile(tile_name, snr_lvl=5):
     print(f"\n--- Finished processing for tile: {tile_name} ---")
     print(f"Aggregated {len(tile_md)} successful annotation sets.")
     print(f"Aggregated {len(tile_rejected_md)} rejected object sets.")
-
-    output_dir_ann = f"./lsst_data/annotations_lvl{snr_lvl}/"
-    output_dir_rej = f"./lsst_data/rejected_objs_lvl{snr_lvl}/"
-    os.makedirs(output_dir_ann, exist_ok=True)
-    os.makedirs(output_dir_rej, exist_ok=True)
 
     ann_path = os.path.join(output_dir_ann, f"dc2_{tile_name}.json")
     rej_path = os.path.join(output_dir_rej, f"dc2_{tile_name}.json")
@@ -537,6 +599,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process a single LSST DC2 tile for ground truth annotations.")
     parser.add_argument("tile_name", type=str, help="The name of the tile to process (e.g., '53.25_-41.8').")
     parser.add_argument("--snr", type=int, default=5, help="SNR level (default: 5)")
+    
     args = parser.parse_args()
     
     start_time = time.time()
