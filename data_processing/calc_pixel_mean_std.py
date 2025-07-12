@@ -7,7 +7,7 @@ import json
 import numpy as np
 import argparse
 
-def calculate_pixel_stats(root_dir, snr_lvl, num_channels):
+def calculate_pixel_stats(root_dir, anns_dir, snr_lvl, num_channels):
     """
     Calculate pixel statistics from image data.
     
@@ -16,9 +16,13 @@ def calculate_pixel_stats(root_dir, snr_lvl, num_channels):
         snr_lvl (int): SNR level for annotations directory
         num_channels (int): Number of channels in the image data
     """
-    annotations_dir = f'{root_dir}annotations_lvl{snr_lvl}/'
-    clean_metadata_path = os.path.join(annotations_dir, 'all_metadata.json')
-
+    annotations_dir = f'{root_dir}{anns_dir}_lvl{snr_lvl}/'
+    clean_metadata_path = os.path.join(annotations_dir, 'train.json')
+    print(f"Calculating the mean and std using image filenames from {clean_metadata_path}")
+    if not os.path.exists(clean_metadata_path):
+        print(f"Error: Metadata file not found at {clean_metadata_path}")
+        return
+    
     with open(clean_metadata_path, 'r') as f:
         data = json.load(f)
 
@@ -61,6 +65,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Calculate pixel mean and std for model normalization.')
     parser.add_argument('--root_dir', type=str, default='./lsst_data/', 
                        help='Root directory of the data (e.g., ./lsst_data/)')
+    parser.add_argument('--anns_dir', type=str, required=True,
+                       help='Base name for the annotations directory (e.g., "annotations", "annotations_ups", "annotationsc_ups").')
     parser.add_argument('--snr_lvl', type=int, default=5, 
                        help='SNR level for annotations directory')
     parser.add_argument('--num_channels', type=int, required=True, 
@@ -68,4 +74,5 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    calculate_pixel_stats(args.root_dir, args.snr_lvl, args.num_channels)
+    calculate_pixel_stats(args.root_dir, args.anns_dir, args.snr_lvl, args.num_channels)
+
