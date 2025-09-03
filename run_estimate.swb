@@ -1,0 +1,12 @@
+#!/bin/bash
+
+#SBATCH --job-name="estimate"
+#SBATCH --output="outs/estimate.out"
+#SBATCH --partition=gpux1
+#SBATCH --time=1
+#SBATCH --cpu_per_gpu=40
+
+module load opence
+conda activate ddrailnv
+
+python estimate.py --output-dir /home/g4merz/DeepDISC_Roman_Rubin/models/ --run-name GMLpre_R50_gold --cfgfile configs/solo/solo_r50_gold.py

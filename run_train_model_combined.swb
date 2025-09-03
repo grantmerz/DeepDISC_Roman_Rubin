@@ -1,0 +1,12 @@
+#!/bin/bash
+
+#SBATCH --job-name="GMLpre_R50_gold_comb"
+#SBATCH --output="/home/g4merz/DeepDISC_Roman_Rubin/outs/GMLpre_R50_gold_combined"
+#SBATCH --partition=gpux4
+#SBATCH --time=6
+#SBATCH --cpu_per_gpu=40
+
+module load opence
+conda activate ddrailnv
+
+python train_model_combined.py --cfgfile configs/solo/solo_r50_gold_combined.py --output-dir /home/g4merz/DeepDISC_Roman_Rubin/models/ --num-gpus 4 --run-name GMLpre_R50_gold_combined
