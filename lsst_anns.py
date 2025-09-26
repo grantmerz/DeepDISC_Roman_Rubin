@@ -1,42 +1,24 @@
-# In case you need to point to pre-existing scarlet install
-import sys
-# change these paths to your specific directories where deepdisc and detectron2 are stored
-sys.path.insert(0, '/home/yse2/deepdisc/src')
-sys.path.insert(0, '/home/yse2/detectron2')
-
-import os, json, glob
-import time
+import os, json, time
 import argparse
 import multiprocessing as mp
 import warnings
 import numpy as np
 import pandas as pd
-
 import cv2
-import deepdisc
-import detectron2
-print(deepdisc.__file__)
-print(detectron2.__file__)
-import scarlet
-import sep
 # Print the versions to test the imports and so we know what works
-print(scarlet.__version__)
-print(np.__version__)
-print(sep.__version__)
-
 import galsim
 import btk
 from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
 
-
 # --- Configuration ---
-root_dir = './lsst_data/'
-lsst_dir = f'{root_dir}truth/'
+ROOT_DIR = '/u/yse2/lsst_data/'
+SAVE_DIR = '/work/hdd/bfhm/yse2/'
+LSST_DIR = f'{ROOT_DIR}truth/'
 
-cutouts_per_tile = 225 # we shld prob just dynamically calculate this by looking through the truth folders
-seed = 8312
-rng = np.random.RandomState(seed)
-grng = galsim.BaseDeviate(rng.randint(0, 2**30))
+CUTOUTS_PER_TILE = 225 # we shld prob just dynamically calculate this by looking through the truth folders
+SEED = 8312
+RNG = np.random.RandomState(SEED)
+GRNG = galsim.BaseDeviate(RNG.randint(0, 2**30))
 
 def e1e2_to_ephi(e1,e2):
     pa = np.arctan(e2/e1)
@@ -106,7 +88,9 @@ def get_star_gsparams(mag, flux, noise):
     if do_thresh or do_acc:
         isbright = True
 
-        kw = {}
+        kw = {
+            'maximum_fft_size': 16384
+        }
         if do_thresh:
 
             # this is designed to quantize the folding_threshold values,
@@ -319,13 +303,14 @@ def load_cutout_data(tile, cutout_id, wcs_header=None):
     """Load essential truth catalog data for a specific cutout"""
     base_filename = f'c{cutout_id}_{tile}'
     paths = {
-        'lsst_img': f'{lsst_dir}dc2_{tile}/full_{base_filename}.npy',
-        'truth_cat': f'{lsst_dir}dc2_{tile}/truth_{base_filename}.json',
-        'det_cat': f'{lsst_dir}dc2_{tile}/det_{base_filename}.json',
-        'matched_det': f'{lsst_dir}dc2_{tile}/matched_{base_filename}.json'
+        'lsst_img': f'{LSST_DIR}{tile}/{base_filename}.npy',
+        'truth_cat': f'{LSST_DIR}{tile}/truth_{base_filename}.json',
+        'det_cat': f'{LSST_DIR}{tile}/det_{base_filename}.json'
     }
 
     if not os.path.exists(paths['lsst_img']):
+        # as of 9/26/25, this case should be impossible since each Roman cutout was matched to an LSST cutout in all 700 tiles
+        # but if it does happen in the future,
         # we can handle this in the main loop by creating empty dictionaries
         print(f"Warning: Image file for cutout {cutout_id} from tile {tile} does not exist! Skipping.")
         return None
@@ -335,7 +320,7 @@ def load_cutout_data(tile, cutout_id, wcs_header=None):
         height, width = lsst_img.shape[1], lsst_img.shape[2]
         noise = np.array([sigma_clipped_stats(img)[-1] for img in lsst_img])
         del lsst_img
-        # load truth cat if it exists, otherwise create empty dfs
+        # load truth cat if it exists, otherwise create empty dfs (again should be impossible now as of 9/26/25)
         truth_cat = pd.read_json(paths['truth_cat'], orient='records') if os.path.exists(paths['truth_cat']) else pd.DataFrame()
         return {
             'tile': tile,
@@ -352,7 +337,7 @@ def load_cutout_data(tile, cutout_id, wcs_header=None):
         return None
 
 
-def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise, rejected_mask_dir, snr_lvl=5):
+def process_object(obj_entry, survey, se_kernel, obj_idx, cutout_id, noise, snr_lvl=5):
     """
     Processes a single object from the truth catalog to generate an annotation or a rejection log.
     """
@@ -381,27 +366,30 @@ def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise
         except SourceNotVisible:
             # runs if the source's flux was zero for this filter
             print(f"Cutout ({cutout_id}): Object {obj_idx} not visible in filter {filt}. Flux is zero! Skipping.")
-            pass
+            continue
         
         except Exception as e:
             # galsim fails, for example, when the star has a really high flux meaning the FFT size will be massive
             print(f"Cutout ({cutout_id}): Galsim failed for {obj_idx} in {filt}! Below is the error:\n {e}")
-            pass
+            continue
             # For now, we create an empty mask to trigger rejection.
             # segs.append(np.zeros((128, 128), dtype=bool))
     
     obj_id = int(obj_entry['id']) if obj_entry['truth_type'] == 2 else int(obj_entry['cosmodc2_id'])
     
-    # now when an obj is rejected, save its mask and store the path
-    def handle_rejection(reason, galsim_fail=False):
-        if galsim_fail:
-            mask_path = None
-        else:
-            mask_dir = os.path.join(rejected_mask_dir, tile, f"c{cutout_id}")
-            os.makedirs(mask_dir, exist_ok=True)
-            mask_path = os.path.join(mask_dir, f"mask_{obj_idx}.npy")
-            np.save(mask_path, combined_mask)
-        
+    # as of 9/26/25, we will no longer save the rejected masks as they would take up too much disk space
+    # when dealing with all 700 tiles
+    # but we will keep the code here in case we want to save them again in the future
+    
+    # now when an obj is rejected, save its mask and store the path 
+    def handle_rejection(reason):#, galsim_fail=False):
+        # if galsim_fail:
+        #     mask_path = None
+        # else:
+        #     mask_dir = os.path.join(rejected_mask_dir, tile, f"c{cutout_id}")
+        #     os.makedirs(mask_dir, exist_ok=True)
+        #     mask_path = os.path.join(mask_dir, f"mask_{obj_idx}.npy")
+        #     np.save(mask_path, combined_mask)
         rejected_obj = {
             'obj_id': obj_id,
             'obj_truth_idx': obj_idx,
@@ -412,8 +400,8 @@ def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise
             'size_true': obj_entry['size_true'],
             'ellipticity_1_true': obj_entry['ellipticity_1_true'],
             'ellipticity_2_true': obj_entry['ellipticity_2_true'],
-            'reason': reason,
-            'mask_path': mask_path
+            'reason': reason
+            # 'mask_path': mask_path
         }
         for filt in filters:
             rejected_obj[f'mag_{filt}'] = obj_entry[f'mag_{filt}'] # AB mag values
@@ -425,7 +413,7 @@ def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise
         combined_mask = np.clip(np.sum(segs,axis=0), a_min=0, a_max=1)
     else:
         combined_mask = None # will only happens if galsim fails in all filters
-        return handle_rejection('galsim_fail', galsim_fail=True)
+        return handle_rejection('galsim_fail')#, galsim_fail=True)
     
     if np.sum(combined_mask) == 0:
         return handle_rejection('empty_mask')
@@ -480,7 +468,7 @@ def process_object(obj_entry, survey, se_kernel, obj_idx, tile, cutout_id, noise
         
     return 'success', obj_md
 
-def process_cutout(cutout_data, rejected_mask_dir, snr_lvl=5):
+def process_cutout(cutout_data, snr_lvl=5):
     """Generates annotation dicts for all objects in a given cutout."""
     # cutout file does not exist but we still need an empty entry
     if cutout_data is None:
@@ -496,7 +484,6 @@ def process_cutout(cutout_data, rejected_mask_dir, snr_lvl=5):
         "tile": cutout_data['tile'],
         "det_cat_path": cutout_data['paths']['det_cat'],
         "truth_cat_path": cutout_data['paths']['truth_cat'],
-        "matched_det_path": cutout_data['paths']['matched_det'],
         "wcs": cutout_data['wcs']
     }
 
@@ -520,10 +507,8 @@ def process_cutout(cutout_data, rejected_mask_dir, snr_lvl=5):
     rejected_objs = []
     for idx, obj in dcut.iterrows():
         status, result_dict = process_object(obj, survey, se_kernel, obj_idx=idx, 
-                                             tile=cutout_data['tile'], 
                                              cutout_id=cutout_data['cutout_id'], 
                                              noise=cutout_data['noise'],
-                                             rejected_mask_dir=rejected_mask_dir,
                                              snr_lvl=snr_lvl)
         if status == 'success':
             annotations.append(result_dict)
@@ -540,11 +525,11 @@ def process_single_cutout_wrapper(args):
     A helper function to unpack args for use with multiprocessing.Pool
     It loads and processes a single cutout
     """
-    tile_name, cutout_id, snr_lvl, wcs_header, rejected_mask_dir = args
-    print(f"Processing {tile_name} | Cutout {cutout_id}...")
+    tile_name, cutout_id, snr_lvl, wcs_header = args
+    # print(f"Processing {tile_name} | Cutout {cutout_id}...")
     
     cutout_data = load_cutout_data(tile_name, cutout_id, wcs_header)
-    success_ddict, rejected_ddict = process_cutout(cutout_data, rejected_mask_dir, snr_lvl)
+    success_ddict, rejected_ddict = process_cutout(cutout_data, snr_lvl)
     return success_ddict, rejected_ddict
 
 def process_and_save_tile(tile_name, snr_lvl=5):
@@ -554,20 +539,20 @@ def process_and_save_tile(tile_name, snr_lvl=5):
     print(f"--- Starting parallel processing for tile: {tile_name} ---")
     
     # lookup dict for wcs headers
-    wcs_df = pd.read_json(f"{lsst_dir}dc2_{tile_name}/wcs_{tile_name}.json")
-    wcs_lookup = wcs_df.set_index('cutout_id')['wcs_header'].to_dict()
+    with open(f"{LSST_DIR}{tile_name}/wcs_{tile_name}.json", 'r') as f:
+        wcs_data = json.load(f)
+    wcs_lookup = {int(k.replace('c', '')): v for k, v in wcs_data.items()}
 
-    output_dir_ann = f"./lsst_data/annotations_lvl{snr_lvl}/"
-    output_dir_rej = f"./lsst_data/rejected_objs_lvl{snr_lvl}/"
-    rejected_mask_dir = f"{output_dir_rej}rejected_masks/"
+    output_dir_ann = f"{SAVE_DIR}annotations_lvl{snr_lvl}/"
+    output_dir_rej = f"{SAVE_DIR}rejected_objs_lvl{snr_lvl}/"
     os.makedirs(output_dir_ann, exist_ok=True)
     os.makedirs(output_dir_rej, exist_ok=True)
     
     # args for each task
-    tasks = [(tile_name, cutout_id, snr_lvl, wcs_lookup.get(cutout_id, None), rejected_mask_dir) 
-             for cutout_id in range(cutouts_per_tile)]
+    tasks = [(tile_name, cutout_id, snr_lvl, wcs_lookup.get(cutout_id, None)) 
+             for cutout_id in range(CUTOUTS_PER_TILE)]
     
-    num_processes = int(os.environ.get("SLURM_CPUS_ON_NODE", 16))
+    num_processes = int(os.environ.get("SLURM_CPUS_ON_NODE", len(os.sched_getaffinity(0)) or 64))
     print(f"Creating a pool of {num_processes} worker processes.")
     with mp.Pool(processes=num_processes) as pool:
         # pool.map distributes the tasks and blocks until all are complete
@@ -582,8 +567,8 @@ def process_and_save_tile(tile_name, snr_lvl=5):
     print(f"Aggregated {len(tile_md)} successful annotation sets.")
     print(f"Aggregated {len(tile_rejected_md)} rejected object sets.")
 
-    ann_path = os.path.join(output_dir_ann, f"dc2_{tile_name}.json")
-    rej_path = os.path.join(output_dir_rej, f"dc2_{tile_name}.json")
+    ann_path = os.path.join(output_dir_ann, f"{tile_name}.json")
+    rej_path = os.path.join(output_dir_rej, f"{tile_name}.json")
 
     if tile_md:
         print(f"Saving successful annotations to {ann_path}")
