@@ -590,23 +590,5 @@ if __name__ == "__main__":
     start_time = time.time()
     process_and_save_tile(args.tile_name, snr_lvl=args.snr)
     end_time = time.time()
-    print(end_time - start_time, " seconds")
-    # 1022.3751366138458 s ~ 17 mins for one subpatch that had 280 entries
-
-# def add_roman_to_lsst(file, lsst_img, root_dir):
-#     # grabbing selected Roman image data
-#     curr_rimg_filename = file.replace('./roman_data/', root_dir)
-#     roman_im = np.load(curr_rimg_filename)
-#     # print("Old File: ", file)
     
-#     new_filename = file.replace('truth', 'truth-combined')
-#     cutout_filename = (re.search(r'roman_data/(.+)', new_filename)).group(1)
-#     # print(cutout_filename)
-#     full_cutout_filename = f'{root_dir}{cutout_filename}'
-#     # print("Roman: ", roman_im.shape)
-#     # print(roman_im[0, :, :])
-#     # print("LSST: ", np.asarray(upsampled_lsst_imgs_lz).shape)
-#     # print(np.asarray(upsampled_lsst_imgs_lz)[-1, :, :])
-    
-#     combined_data = np.concatenate((roman_im, upsampled_lsst_img), axis=0)
-#     np.save(full_cutout_filename, combined_data)
+    print(f"\nPipeline finished for tile {args.tile_name}. Took {end_time - start_time:.2f} seconds.")
