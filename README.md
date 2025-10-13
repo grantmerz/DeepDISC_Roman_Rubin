@@ -1,14 +1,12 @@
 # Joint analysis of Roman/Rubin data with DeepDISC
 
-**For HAL, OPEN THIS FILE WITH MARKDOWN READER in Jupyter Lab or Preview with Markdown Reader in HAL**
-
 ## Data Processing Pipeline
 
 This section describes the complete workflow for processing Roman and LSST data for training DeepDISC models.
 
 ### 1. Downloading and Preparing Roman Data
 
-After downloading the FITS files, use `data_processing/roman/prepare_roman_data.py` to prepare the data into the COCO format. This script creates cutouts from the Roman images and generates annotations based on the segmentation masks provided by Troxel that were done by SExtractor.
+After downloading the FITS files, use `data_processing/roman/prepare_roman_data.py` to prepare the data into the COCO format. This script creates cutouts from the Roman images and also generates annotations based on the segmentation masks provided by Troxel that were done by SExtractor. These annotations, as of 10/13/25, aren't used as part of our pipeline yet.
 
 ### 2. Checking Roman Cutout Integrity
 
@@ -38,32 +36,27 @@ Per-band statistics:
     - Empty count:                     0
 ```
 
-The detailed report is saved to a JSON file (e.g., `/u/yse2/roman_cutout_integrity_report.json`) containing filenames and bands with corrupt data.
+The detailed report is saved to a JSON file (e.g., `roman_cutout_integrity_report.json`) containing filenames and bands with corrupt data.
 
 ### 3. Obtaining LSST Data
 
-Get all the LSST cutouts and catalogs that overlap with the Roman data. There are four notebooks in `data_processing/lsst/` that handle all the data gathering:
+Now, we get all the LSST cutouts and catalogs that overlap with the Roman data. There are four notebooks in `data_processing/lsst/` that handle all the data gathering:
 
+- **LSST_Roman_MasterCatalogs.ipynb**: Creates master LSST truth and detection catalogs
 - **LSST_Roman_Butler_Calls.ipynb**: Butler calls to access LSST data
 - **LSST_Roman_Cutouts_Catalogs.ipynb**: Creates LSST cutouts and catalogs
-- **LSST_Roman_MasterCatalogs.ipynb**: Creates master catalogs
-- **LSST_Roman_Verify_Cutouts.ipynb**: Verifies LSST cutouts
-
-After obtaining the truth catalogs and images from NERSC and transferring everything to Delta, verify if any of them are empty before proceeding.
+- **LSST_Roman_Verify_Cutouts.ipynb**: Verifies LSST cutouts, catalogs and WCS to ensure none of them are empty or contain NAN values.
 
 ### 4. Creating LSST Annotations
 
 Create ground truth annotations using Galsim and the truth information:
 
 ```bash
-# Use the job script for batch processing
+# job script for batch processing
 sbatch jobs/lsst_anns.sh
-
 # Or run directly with:
 python lsst_anns.py
 ```
-
-This script creates annotations for objects in cutouts using LSST Truth catalog info with multiprocessing.
 
 ### 5. Combining and Cleaning Annotations
 
@@ -114,23 +107,19 @@ Modify `swin_lsst.py` to use the ImageNet Swin Transformer by updating:
 - Batch size appropriate for your GPU setup
 - Pixel mean and standard deviation values from step 6
 
-Then test your training configuration with:
+Then train the model with `run_model.py` using the below command:
 
 ```bash
 python run_model.py --cfgfile ./deepdisc/configs/solo/swin_lsst.py --train-metadata lsst_data/annotations/train.json --eval-metadata lsst_data/annotations/val.json --num-gpus 2 --run-name lsst --output-dir ./lsst_runs/run1
 ```
 
 ## File Structure
-
+<!--
 This section explains the structure and purpose of the folders/files in this repo.
 
-As of 11/13/24 and based on [LSST/Rubin Project Outline](https://docs.google.com/document/d/1hFqOK-6hv6E2UjG0CJjX5IfqadrR0yOK_ekBkm2A1ns/edit?pli=1&tab=t.0#heading=h.kqvlnv4vmq2p), the most relevant notebooks and scripts are `metrics and metrics_v2` notebooks and `lsst_anns.py`.
+As of 11/13/24 and based on [LSST/Rubin Project Outline](https://docs.google.com/document/d/1hFqOK-6hv6E2UjG0CJjX5IfqadrR0yOK_ekBkm2A1ns/edit?pli=1&tab=t.0#heading=h.kqvlnv4vmq2p), the most relevant notebooks and scripts are `metrics and metrics_v2` notebooks and `lsst_anns.py`. 
+-->
 
-### Scripts
-
-**lsst_anns.py**: Creates annotations for objs in cutouts using LSST Truth catalog info (has multiprocessing)
-
-**run_model.py**: Training script.
 
 ### Notebooks
 
@@ -142,7 +131,7 @@ As of 11/13/24 and based on [LSST/Rubin Project Outline](https://docs.google.com
 
 **galsim_truth_anns.ipynb (May not be as updated as `lsst_anns.py`)**: Notebook version of `lsst_anns.py` that creates annotations in _multiband_ for obsjs in cutouts using LSST Truth Catalog
 
-**galsim_truth_anns_multiband.ipynb (Has been incorporated into `lsst_anns.py`)**: Grant's notebook adding multiband info to annotations
+<!-- **galsim_truth_anns_multiband.ipynb (Has been incorporated into `lsst_anns.py`)**: Grant's notebook adding multiband info to annotations -->
 
 **RunInference.ipynb**: Notebook that evaluates the model and creates all the plots (AP scores, metrics, mags vs metrics, confusion matrices, etc).
 
@@ -152,4 +141,5 @@ As of 11/13/24 and based on [LSST/Rubin Project Outline](https://docs.google.com
 
 ### Folders
 
-**data_processing/**: Contains all the data processing scripts/notebooks used to explore/format Roman data. The subfolder `lsst/` has the notebooks used to combine Roman + LSST data (starting with Roman data first and adding LSST images) and to create the LSST Detection catalog.
+**data_processing/**: Contains all the data processing scripts/notebooks used to explore and format Roman and LSST data. 
+<!-- The subfolder `lsst/` has the notebooks used to combine Roman + LSST data (starting with Roman data first and adding LSST images) and to create the LSST Detection catalog. -->
