@@ -306,26 +306,41 @@ class FeatureMapMLP(nn.Module):
         channel = f_shapes[0].channels
 
         shapes = [(channel,square_pad//s,square_pad//s) for s in strides]
-        self.fcls = {}
-        for i,f in enumerate(in_features.keys()):
-            self.fcls[f] = nn.Linear(np.prod(shapes[i]),hidden_dim)
+        
+        #use all feature maps
+        #self.fcls = {}
+        #for i,f in enumerate(in_features.keys()):
+        #    self.fcls[f] = nn.Linear(np.prod(shapes[i]),hidden_dim)
 
-        self.fcl_final = nn.Sequential(nn.Linear(hidden_dim,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,dim)),
+        #self.fcl_final = nn.Sequential(nn.Linear(hidden_dim,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,dim)),
+
+
+        #take the features from the deepest feature map
+        self.fcls = nn.Sequential(
+            nn.Linear(np.prod(shapes[-1]),hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim,dim)
+            )
+
 
     def forward(self, features):
         #take the features from all levels of the feature map and run them
         #each through a fully connected layer.
         
-        f_outs = []
+        #f_outs = []
 
-        for f in self.in_features:
-            f_out=self.fcls[f](features[f].flatten())
-            f_outs.append(f_out)
+        #for f in self.in_features:
+        #    f_out=self.fcls[f](features[f].flatten())
+        #    f_outs.append(f_out)
 
         #now add them together and run them through an MLP
-        f_outs = torch.stack(f_outs, dim=0).sum(dim=0)   
+        #f_outs = torch.stack(f_outs, dim=0).sum(dim=0)   
+        #outputs = self.fcl_final(f_outs)
 
-        outputs = self.fcl_final(f_outs)
+        #just use the final feature map
+        outputs = self.fcls(features)
         
         return outputs
 
