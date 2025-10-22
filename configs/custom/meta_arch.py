@@ -68,11 +68,12 @@ class GeneralizedRCNNMoco(nn.Module):
         self.roi_heads = roi_heads
         
         #self.mlp = mlp
-        #self.mlp = FeatureMapMLP(self.backbone_q.output_shape(),self.backbone_q._square_pad,hidden_dim,dim)
-        #self.moco = MMMoCo(backbone_q, backbone_k, mlp, K=K, m=m, T=T)
+        #self.mlp = FeatureMapMLP(backbone_q.output_shape(),backbone_q._square_pad,hidden_dim,dim)
+        outshape = backbone_q.output_shape()
+        sp = backbone_q._square_pad
+        self.moco = MMMoCo(self.backbone_q, self.backbone_k, 
+                           outshape, sp, hidden_dim, dim=dim, K=K, m=m, T=T)
         self.infoNCE_loss = nn.CrossEntropyLoss()#.cuda(args.gpu)
-
-
 
         self.input_format = input_format
         self.vis_period = vis_period
@@ -173,42 +174,42 @@ class GeneralizedRCNNMoco(nn.Module):
             gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
         else:
             gt_instances = None
-            
+        
         #if "wcs" in batched_inputs[0]:
         #    image_wcs = [x["wcs"] for x in batched_inputs]
         #else:
         #    image_wcs = None
 
-        #features from the LSST encoder are sent to detection heads
-        #select features based on if they have labels or not
-        features = self.backbone_q(images.tensor)
-        #features_roman = self.backbone_k(roman_images)
-
-        #here is where we would compute moco loss 
-        #need to supply queued key images
-        #logits, labels = self.moco(images.tensor,images_k)
-        #moco_loss = self.infoNCE_loss(logits,labels)
 
 
+        features_q = self.backbone_q(images.tensor)
 
+        # grab the features computed through the key encoder - don't need gradients
+        #have a flag here for if we have an image pair for moco loss 
+        images_k = images.tensor
+        logits, labels = self.moco(features_q,images_k)
+        moco_loss = self.infoNCE_loss(logits,labels)
+
+
+        #features from the LSST encoder are sent to detection heads, if they have labels
 
         if self.proposal_generator is not None:
-            proposals, proposal_losses = self.proposal_generator(images, features, gt_instances)
+            proposals, proposal_losses = self.proposal_generator(images, features_q, gt_instances)
         else:
             assert "proposals" in batched_inputs[0]
             proposals = [x["proposals"].to(self.device) for x in batched_inputs]
             proposal_losses = {}
 
-        _, detector_losses = self.roi_heads(images, features, proposals, gt_instances)#, image_wcs)
+        _, detector_losses = self.roi_heads(images, features_q, proposals, gt_instances)#, image_wcs)
         if self.vis_period > 0:
             storage = get_event_storage()
             if storage.iter % self.vis_period == 0:
                 self.visualize_training(batched_inputs, proposals)
-
+        
         losses = {}
+        losses.update({"infoNCE_loss":moco_loss})
         losses.update(detector_losses)
         losses.update(proposal_losses)
-        losses.update({"infoNCE_loss":moco_loss})
         return losses
 
     def inference(
@@ -241,7 +242,7 @@ class GeneralizedRCNNMoco(nn.Module):
             image_wcs = None
 
         images = self.preprocess_image(batched_inputs)
-        features = self.backbone(images.tensor)
+        features = self.backbone_q(images.tensor)
 
         if detected_instances is None:
             if self.proposal_generator is not None:
@@ -269,8 +270,8 @@ class GeneralizedRCNNMoco(nn.Module):
         images = [(x - self.pixel_mean) / self.pixel_std for x in images]
         images = ImageList.from_tensors(
             images,
-            self.backbone.size_divisibility,
-            padding_constraints=self.backbone.padding_constraints,
+            self.backbone_q.size_divisibility,
+            padding_constraints=self.backbone_q.padding_constraints,
         )
 
         #print(images[0].size())
@@ -301,6 +302,7 @@ class FeatureMapMLP(nn.Module):
         super().__init__()
 
         self.in_features = in_features
+        self.f_keys = list(self.in_features.keys())
         f_shapes = list(self.in_features.values())
         strides = [s.stride for s in f_shapes]
         channel = f_shapes[0].channels
@@ -340,6 +342,7 @@ class FeatureMapMLP(nn.Module):
         #outputs = self.fcl_final(f_outs)
 
         #just use the final feature map
+        features = nn.Flatten()(features[self.f_keys[-1]])
         outputs = self.fcls(features)
         
         return outputs
@@ -355,26 +358,30 @@ class MMMoCo(nn.Module):
     https://arxiv.org/abs/1911.05722.  
     Uses multimodal images, so the query and key encoders will be slightly different
     """
-    def __init__(self, mode1_encoder, mode2_encoder, mlp, K=65536, m=0.999, T=0.07):
+    def __init__(self, mode1_encoder, mode2_encoder, outshape, sp, hidden_dim, dim, K=65536, m=0.999, T=0.07):
         """
         dim: feature dimension (default: 128)
         K: queue size; number of negative keys (default: 65536)
         m: moco momentum of updating key encoder (default: 0.999)
         T: softmax temperature (default: 0.07)
+        self.backbone_q, self.backbone_k, 
+                           outshape, sp, hidden_dim, dim=dim, K=K, m=m, T=T
         """
-        super(MoCo, self).__init__()
+        super(MMMoCo, self).__init__()
 
         self.K = K
         self.m = m
         self.T = T
 
         # assume the encoders are already created and initialized
-        self.encoder_q = mode1_encoder
-        self.encoder_k = mode2_encoder
+        #self.encoder_q = mode1_encoder
+        #self.encoder_k = mode2_encoder
+        self.mlp_q = FeatureMapMLP(outshape,sp,hidden_dim,dim)
+        self.mlp_k = FeatureMapMLP(outshape,sp,hidden_dim,dim)
         
         #add the mlp to the encoders to get the latent dim embeddings
-        self.encoder_q = nn.Sequential(self.encoder_q,mlp)
-        self.encoder_k = nn.Sequential(self.encoder_k,mlp)
+        self.encoder_q = nn.Sequential(mode1_encoder,self.mlp_q)
+        self.encoder_k = nn.Sequential(mode2_encoder,self.mlp_k)
 
         for (name_q,param_q), (name_k,param_k) in zip(self.encoder_q.named_parameters(), self.encoder_k.named_parameters()):
             #we need to exclude the patch embedding layer of the key encoder from this
@@ -469,33 +476,39 @@ class MMMoCo(nn.Module):
 
         return x_gather[idx_this]
 
-    def forward(self, im_q, im_k):
-        #take in features instead of images
+    def forward(self, features_q, im_k):
         """
+        Take in query features instead of images.  Keep key images as input
+        so that we can make use of the shuffle batch norm
+
+
         Input:
-            im_q: a batch of query images
+            features_q: a batch of query features
             im_k: a batch of key images
         Output:
             logits, targets
         """
 
-        # compute query features
-        q = self.encoder_q(im_q)  # queries: NxC
+        # compute query features. Keep original features (before normalizing)
+        # stored so that they can be passed to the detection heads
+                
+        q = self.mlp_q(features_q)  # queries: NxC
 
         q = nn.functional.normalize(q, dim=1)
 
         # compute key features
-        with torch.no_grad():  # no gradient to keys
-            self._momentum_update_key_encoder()  # update the key encoder
+        #with torch.no_grad():  # no gradient to keys
+        self._momentum_update_key_encoder()  # update the key encoder
 
-            # shuffle for making use of BN
-            im_k, idx_unshuffle = self._batch_shuffle_ddp(im_k)
+        # shuffle for making use of BN
+        im_k, idx_unshuffle = self._batch_shuffle_ddp(im_k)
 
-            k = self.encoder_k(im_k)  # keys: NxC
-            k = nn.functional.normalize(k, dim=1)
+        k = self.encoder_k(im_k)  # keys: NxC
+        k = nn.functional.normalize(k, dim=1)
 
-            # undo shuffle
-            k = self._batch_unshuffle_ddp(k, idx_unshuffle)
+        # undo shuffle
+        #with torch.no_grad():
+        k = self._batch_unshuffle_ddp(k, idx_unshuffle)
 
         # compute logits
         # Einstein sum is more intuitive

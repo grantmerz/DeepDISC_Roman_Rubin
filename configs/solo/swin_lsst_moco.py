@@ -29,7 +29,7 @@ import deepdisc.model.loaders as loaders
 from deepdisc.data_format.augment_image import dc2_train_augs
 from deepdisc.data_format.image_readers import NumpyImageReader
 from detectron2.config import LazyCall as L
-from ..custom.meta_arch import MMMoCo
+from ..custom.meta_arch import GeneralizedRCNNMoco
 
 # # Overrides
 train.init_checkpoint = "/projects/bdsp/yse2/model_final_246a82.pkl"
@@ -42,8 +42,9 @@ model.roi_heads.batch_size_per_image = 512
 
 model.backbone.bottom_up.in_chans = 6
 
-model._target_ = MMMoCo
-model.backbone
+model._target_ = GeneralizedRCNNMoco
+model.backbone_q = model.backbone
+model.backbone_k = model.backbone
 
 # LSST Data in 6 filters for 700 tiles
 model.pixel_mean = [
