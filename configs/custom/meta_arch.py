@@ -399,6 +399,12 @@ class MMMoCo(nn.Module):
 
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
+        param_to_check = self.encoder_k[0].bottom_up.patch_embed.proj.weight
+
+        # Register a buffer to store its value from the previous step
+        # We use .data.clone() to get the values without grad history
+        self.register_buffer("old_patch_embed_weight", param_to_check.data.clone())
+
     @torch.no_grad()
     def _momentum_update_key_encoder(self):
         """
@@ -489,9 +495,18 @@ class MMMoCo(nn.Module):
             logits, targets
         """
 
-        # compute query features. Keep original features (before normalizing)
-        # stored so that they can be passed to the detection heads
-                
+
+
+        param_to_check = self.encoder_k[0].bottom_up.patch_embed.proj.weight
+
+        # We use .data to avoid tracking this comparison in the computational graph
+        if torch.allclose(param_to_check.data, self.old_patch_embed_weight):
+            print(f"Rank {torch.distributed.get_rank()}: Patch embed weight has NOT changed.")
+        else:
+            print(f"Rank {torch.distributed.get_rank()}: Patch embed weight HAS CHANGED!")
+
+        
+        #Project the query features into the embedding space 
         q = self.mlp_q(features_q)  # queries: NxC
 
         q = nn.functional.normalize(q, dim=1)
@@ -500,15 +515,17 @@ class MMMoCo(nn.Module):
         #with torch.no_grad():  # no gradient to keys
         self._momentum_update_key_encoder()  # update the key encoder
 
-        # shuffle for making use of BN
-        im_k, idx_unshuffle = self._batch_shuffle_ddp(im_k)
+        
+        # We have to remove the key shuffling because it breaks the gradient
+        #im_k, idx_unshuffle = self._batch_shuffle_ddp(im_k)
+        
 
         k = self.encoder_k(im_k)  # keys: NxC
         k = nn.functional.normalize(k, dim=1)
 
         # undo shuffle
         #with torch.no_grad():
-        k = self._batch_unshuffle_ddp(k, idx_unshuffle)
+        #k = self._batch_unshuffle_ddp(k, idx_unshuffle)
 
         # compute logits
         # Einstein sum is more intuitive
@@ -527,7 +544,7 @@ class MMMoCo(nn.Module):
         labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
 
         # dequeue and enqueue
-        self._dequeue_and_enqueue(k)
+        self._dequeue_and_enqueue(k.detach())
 
         
         return logits, labels
@@ -540,11 +557,15 @@ def concat_all_gather(tensor):
     Performs all_gather operation on the provided tensors.
     *** Warning ***: torch.distributed.all_gather has no gradient.
     """
+
+
+
     tensors_gather = [torch.ones_like(tensor)
         for _ in range(torch.distributed.get_world_size())]
     torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
 
     output = torch.cat(tensors_gather, dim=0)
+
     return output
 
 
