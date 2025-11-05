@@ -41,8 +41,10 @@ class GeneralizedRCNNMoco(nn.Module):
         #mlp: nn.Module,
         proposal_generator: nn.Module,
         roi_heads: nn.Module,
-        pixel_mean: Tuple[float],
-        pixel_std: Tuple[float],
+        lsst_pixel_mean: Tuple[float],
+        lsst_pixel_std: Tuple[float],
+        roman_pixel_mean: Tuple[float],
+        roman_pixel_std: Tuple[float],
         input_format: Optional[str] = None,
         vis_period: int = 0,
         K: int =65536, 
@@ -69,10 +71,10 @@ class GeneralizedRCNNMoco(nn.Module):
         
         #self.mlp = mlp
         #self.mlp = FeatureMapMLP(backbone_q.output_shape(),backbone_q._square_pad,hidden_dim,dim)
-        outshape = backbone_q.output_shape()
-        sp = backbone_q._square_pad
+        outshape_q = backbone_q.output_shape()
+
         self.moco = MMMoCo(self.backbone_q, self.backbone_k, 
-                           outshape, sp, hidden_dim, dim=dim, K=K, m=m, T=T)
+                           outshape_q, hidden_dim, dim=dim, K=K, m=m, T=T)
         self.infoNCE_loss = nn.CrossEntropyLoss()#.cuda(args.gpu)
 
         self.input_format = input_format
@@ -80,11 +82,17 @@ class GeneralizedRCNNMoco(nn.Module):
         if vis_period > 0:
             assert input_format is not None, "input_format is required for visualization!"
 
-        self.register_buffer("pixel_mean", torch.tensor(pixel_mean).view(-1, 1, 1), False)
-        self.register_buffer("pixel_std", torch.tensor(pixel_std).view(-1, 1, 1), False)
+        self.register_buffer("lsst_pixel_mean", torch.tensor(lsst_pixel_mean).view(-1, 1, 1), False)
+        self.register_buffer("lsst_pixel_std", torch.tensor(lsst_pixel_std).view(-1, 1, 1), False)
+        self.register_buffer("roman_pixel_mean", torch.tensor(roman_pixel_mean).view(-1, 1, 1), False)
+        self.register_buffer("roman_pixel_std", torch.tensor(roman_pixel_std).view(-1, 1, 1), False)
         assert (
-            self.pixel_mean.shape == self.pixel_std.shape
-        ), f"{self.pixel_mean} and {self.pixel_std} have different shapes!"
+            self.lsst_pixel_mean.shape == self.lsst_pixel_std.shape  
+        ), f"{self.lsst_pixel_mean} and {self.lsst_pixel_std} have different shapes!"
+    
+        assert (
+            self.roman_pixel_mean.shape == self.roman_pixel_std.shape  
+        ), f"{self.roman_pixel_mean} and {self.roman_pixel_std} have different shapes!"
 
     @classmethod
     def from_config(cls, cfg):
@@ -101,10 +109,10 @@ class GeneralizedRCNNMoco(nn.Module):
 
     @property
     def device(self):
-        return self.pixel_mean.device
+        return self.lsst_pixel_mean.device
 
     def _move_to_current_device(self, x):
-        return move_device_like(x, self.pixel_mean)
+        return move_device_like(x, self.lsst_pixel_mean)
 
     def visualize_training(self, batched_inputs, proposals):
         """
@@ -167,7 +175,7 @@ class GeneralizedRCNNMoco(nn.Module):
         if not self.training:
             return self.inference(batched_inputs)
         
-        images = self.preprocess_image(batched_inputs)
+        lsst_images, roman_images = self.preprocess_image(batched_inputs)
 
         #have a condition here for if we have labelled data
         if "instances" in batched_inputs[0]:
@@ -182,11 +190,11 @@ class GeneralizedRCNNMoco(nn.Module):
 
 
 
-        features_q = self.backbone_q(images.tensor)
+        features_q = self.backbone_q(lsst_images.tensor)
 
         # grab the features computed through the key encoder - don't need gradients
         #have a flag here for if we have an image pair for moco loss 
-        images_k = images.tensor
+        images_k = roman_images.tensor
         logits, labels = self.moco(features_q,images_k)
         moco_loss = self.infoNCE_loss(logits,labels)
 
@@ -194,13 +202,13 @@ class GeneralizedRCNNMoco(nn.Module):
         #features from the LSST encoder are sent to detection heads, if they have labels
 
         if self.proposal_generator is not None:
-            proposals, proposal_losses = self.proposal_generator(images, features_q, gt_instances)
+            proposals, proposal_losses = self.proposal_generator(lsst_images, features_q, gt_instances)
         else:
             assert "proposals" in batched_inputs[0]
             proposals = [x["proposals"].to(self.device) for x in batched_inputs]
             proposal_losses = {}
 
-        _, detector_losses = self.roi_heads(images, features_q, proposals, gt_instances)#, image_wcs)
+        _, detector_losses = self.roi_heads(lsst_images, features_q, proposals, gt_instances)#, image_wcs)
         if self.vis_period > 0:
             storage = get_event_storage()
             if storage.iter % self.vis_period == 0:
@@ -266,16 +274,24 @@ class GeneralizedRCNNMoco(nn.Module):
         """
         Normalize, pad and batch the input images.
         """
-        images = [self._move_to_current_device(x["image"]) for x in batched_inputs]
-        images = [(x - self.pixel_mean) / self.pixel_std for x in images]
-        images = ImageList.from_tensors(
-            images,
+        lsst_images = [self._move_to_current_device(x["image_lsst"]) for x in batched_inputs]
+        lsst_images = [(x - self.lsst_pixel_mean) / self.lsst_pixel_std for x in lsst_images]
+        lsst_images = ImageList.from_tensors(
+            lsst_images,
             self.backbone_q.size_divisibility,
             padding_constraints=self.backbone_q.padding_constraints,
         )
 
+        roman_images = [self._move_to_current_device(x["image_roman"]) for x in batched_inputs]
+        roman_images = [(x - self.roman_pixel_mean) / self.roman_pixel_std for x in roman_images]
+        roman_images = ImageList.from_tensors(
+            roman_images,
+            self.backbone_k.size_divisibility,
+            padding_constraints=self.backbone_k.padding_constraints,
+        )
+
         #print(images[0].size())
-        return images
+        return lsst_images, roman_images
 
     @staticmethod
     def _postprocess(instances, batched_inputs: List[Dict[str, torch.Tensor]], image_sizes):
@@ -306,8 +322,8 @@ class FeatureMapMLP(nn.Module):
         f_shapes = list(self.in_features.values())
         strides = [s.stride for s in f_shapes]
         channel = f_shapes[0].channels
-
-        shapes = [(channel,square_pad//s,square_pad//s) for s in strides]
+        #assume kernel sizes of 4 for each 
+        shapes = [(channel,(square_pad+s-1)//s,(square_pad+s-1)//s) for s in strides]
         
         #use all feature maps
         #self.fcls = {}
@@ -358,7 +374,7 @@ class MMMoCo(nn.Module):
     https://arxiv.org/abs/1911.05722.  
     Uses multimodal images, so the query and key encoders will be slightly different
     """
-    def __init__(self, mode1_encoder, mode2_encoder, outshape, sp, hidden_dim, dim, K=65536, m=0.999, T=0.07):
+    def __init__(self, encoder_q, encoder_k, outshape_q, hidden_dim, dim, K=65536, m=0.999, T=0.07):
         """
         dim: feature dimension (default: 128)
         K: queue size; number of negative keys (default: 65536)
@@ -376,12 +392,30 @@ class MMMoCo(nn.Module):
         # assume the encoders are already created and initialized
         #self.encoder_q = mode1_encoder
         #self.encoder_k = mode2_encoder
-        self.mlp_q = FeatureMapMLP(outshape,sp,hidden_dim,dim)
-        self.mlp_k = FeatureMapMLP(outshape,sp,hidden_dim,dim)
+
+
+        #This assumes that the patch embedding has been fixed such that the feature maps of
+        # both encoders are the same size.
+
+
+        #Check that sizes of final feature map will match
+        sp_q = encoder_q._square_pad
+        sp_k = encoder_k._square_pad
+        ps_q = encoder_q.bottom_up.patch_embed.patch_size[0]
+        ps_k = encoder_k.bottom_up.patch_embed.patch_size[0]
+        pad_q = (ps_q - sp_q % ps_q) if sp_q%ps_q!=0 else 0
+        pad_k = (ps_k - sp_k % ps_k) if sp_k%ps_k!=0 else 0
+        size1 = (sp_q + pad_q -(ps_q-1)-1)/ps_q+1
+        size2 = (sp_k + pad_k -(ps_k-1)-1)/ps_k+1
+
+        assert size1==size2, "Sizes of the feature maps should match.  Check the patch embedding or square padding of the encoders"
+
+        self.mlp_q = FeatureMapMLP(outshape_q,sp_q,hidden_dim,dim)
+        self.mlp_k = FeatureMapMLP(outshape_q,sp_q,hidden_dim,dim)
         
         #add the mlp to the encoders to get the latent dim embeddings
-        self.encoder_q = nn.Sequential(mode1_encoder,self.mlp_q)
-        self.encoder_k = nn.Sequential(mode2_encoder,self.mlp_k)
+        self.encoder_q = nn.Sequential(encoder_q,self.mlp_q)
+        self.encoder_k = nn.Sequential(encoder_k,self.mlp_k)
 
         for (name_q,param_q), (name_k,param_k) in zip(self.encoder_q.named_parameters(), self.encoder_k.named_parameters()):
             #we need to exclude the patch embedding layer of the key encoder from this
@@ -495,17 +529,6 @@ class MMMoCo(nn.Module):
             logits, targets
         """
 
-
-
-        param_to_check = self.encoder_k[0].bottom_up.patch_embed.proj.weight
-
-        # We use .data to avoid tracking this comparison in the computational graph
-        if torch.allclose(param_to_check.data, self.old_patch_embed_weight):
-            print(f"Rank {torch.distributed.get_rank()}: Patch embed weight has NOT changed.")
-        else:
-            print(f"Rank {torch.distributed.get_rank()}: Patch embed weight HAS CHANGED!")
-
-        
         #Project the query features into the embedding space 
         q = self.mlp_q(features_q)  # queries: NxC
 
@@ -549,7 +572,6 @@ class MMMoCo(nn.Module):
         
         return logits, labels
 
-
 # utils
 @torch.no_grad()
 def concat_all_gather(tensor):
@@ -567,165 +589,3 @@ def concat_all_gather(tensor):
     output = torch.cat(tensors_gather, dim=0)
 
     return output
-
-
-
-
-
-class Backbone(nn.Module):
-    """
-    Backbone model meant for pre-training.
-    """
-
-    #@configurable
-    def __init__(
-        self,
-        *,
-        backbone: nn.Module,
-        feature_level: str = None,
-        projection_head: nn.Module,
-        pixel_mean: Tuple[float],
-        pixel_std: Tuple[float],
-        input_format: Optional[str] = None,
-        output_features: bool = False
-    ):
-        """
-        Args:
-            backbone: a backbone module, must follow detectron2's backbone interface
-            input_format: describe the meaning of channels of input. Needed by visualization
-            vis_period: the period to run visualization. Set to 0 to disable.
-        """
-        super().__init__()
-        self.backbone = backbone
-        self.projection_head = projection_head
-        self.feature_level = feature_level
-
-        self.input_format = input_format
-        self.output_features = output_features
-        
-
-        self.register_buffer("pixel_mean", torch.tensor(pixel_mean).view(-1, 1, 1), False)
-        self.register_buffer("pixel_std", torch.tensor(pixel_std).view(-1, 1, 1), False)
-        assert (
-            self.pixel_mean.shape == self.pixel_std.shape
-        ), f"{self.pixel_mean} and {self.pixel_std} have different shapes!"
-
-
-    @property
-    def device(self):
-        return self.pixel_mean.device
-
-    def _move_to_current_device(self, x):
-        return move_device_like(x, self.pixel_mean)
-
-
-    def forward(self, batched_inputs: List[Tuple[torch.Tensor, torch.Tensor]]):
-        """
-        Args:
-            batched_inputs: a list, batched outputs of :class:`DatasetMapper` .
-                Each item in the list contains the image and corresponding label.
-                For now, each item in the list is a tuple that contains:
-
-                * image: Tensor, image in (C, H, W) format.
-                * label (optional):`
-                
-        Returns:
-            list[labels]:
-                Each item is the predicted label for one input image.
-        """
-        if not self.training:
-            return self.inference(batched_inputs)
-
-        #images = batched_inputs[0]
-        #labels = batched_inputs[1]
-        
-        images = torch.stack([d[0] for d in batched_inputs])
-        labels = torch.tensor([d[1] for d in batched_inputs]).to('cuda')
-
-        #print(images.device,labels.device)
-        
-        images = self.preprocess_image(images)
-        
-        
-        features = self.backbone(images)
-        
-
-        if self.feature_level is not None:
-            features = features[self.feature_level]
-        
-
-        loss = self.projection_head(features, labels)
-    
-        losses = {}
-        losses.update(loss)
-        #print(losses)
-        
-        return losses
-
-    def inference(
-        self,
-        batched_inputs: List[Tuple[torch.Tensor, torch.Tensor]],
-    ):
-        """
-        Run inference on the given inputs.
-
-        Args:
-            batched_inputs (list[dict]): same as in :meth:`forward`
-            detected_instances (None or list[Instances]): if not None, it
-                contains an `Instances` object per image. The `Instances`
-                object contains "pred_boxes" and "pred_classes" which are
-                known boxes in the image.
-                The inference will then skip the detection of bounding boxes,
-                and only predict other per-ROI outputs.
-            do_postprocess (bool): whether to apply post-processing on the outputs.
-
-        Returns:
-            When do_postprocess=True, same as in :meth:`forward`.
-            Otherwise, a list[Instances] containing raw network outputs.
-        """
-        assert not self.training
-        
-        images = torch.stack([d[0] for d in batched_inputs])
-        images = self.preprocess_image(images)
-
-        features = self.backbone(images)
-       
-        if self.feature_level is not None:
-            features = features[self.feature_level]
-
-        results = self.projection_head(features)
-        
-        if self.output_features:
-            return results, features
-        else:
-            return results
-
-    def preprocess_image(self, batched_inputs: List[torch.Tensor]):
-        """
-        Normalize, pad and batch the input images.
-        """
-        images = [self._move_to_current_device(x) for x in batched_inputs]
-        images = torch.stack([(x - self.pixel_mean) / self.pixel_std for x in images])
-        #images = torch.tensor(images)
-        #images = ImageList.from_tensors(
-        #    images,
-        #    self.backbone.size_divisibility,
-        #    padding_constraints=self.backbone.padding_constraints,
-        #)
-        return images
-
-    @staticmethod
-    def _postprocess(instances, batched_inputs: List[Dict[str, torch.Tensor]], image_sizes):
-        """
-        Rescale the output instances to the target size.
-        """
-        # note: private function; subject to changes
-        processed_results = []
-        for results_per_image, input_per_image, image_size in zip(
-            instances, batched_inputs, image_sizes
-        ):
-            height = input_per_image.get("height", image_size[0])
-            width = input_per_image.get("width", image_size[1])
-            r = detector_postprocess(results_per_image, height, width)
-            processed_results.append({"instances": r})
-        return processed_results

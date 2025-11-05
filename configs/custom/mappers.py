@@ -34,31 +34,38 @@ class MocoDictMapper(DataMapper):
         """
 
         dataset_dict = copy.deepcopy(dataset_dict)
-        key = self.km(dataset_dict)
-        lsst_image, roman_image = self.IR(key)
-
+        lsst_key,roman_key = self.km(dataset_dict)
+        lsst_image = self.IR(lsst_key)
+        roman_image = self.IR(roman_key)
         # Data Augmentation (do we want to do this?)
-        auginput = T.AugInput(image)
+        auginput_lsst = T.AugInput(lsst_image)
+        auginput_roman = T.AugInput(roman_image)
+
         # Transformations to model shapes
         if self.augmentations is not None:
-            augs = self.augmentations(image)
+            lsst_augs = self.augmentations(lsst_image)
+            roman_augs = self.augmentations(roman_image)
         else:
             augs = T.AugmentationList([])
 
-        transform = augs(auginput)
-        image = torch.from_numpy(auginput.image.copy().transpose(2, 0, 1))
+        transform_lsst = lsst_augs(auginput_lsst)
+        lsst_image = torch.from_numpy(auginput_lsst.image.copy().transpose(2, 0, 1))
+
+        transform_roman = roman_augs(auginput_roman)
+        roman_image = torch.from_numpy(auginput_roman.image.copy().transpose(2, 0, 1))
+
 
         annos = [
-            utils.transform_instance_annotations(annotation, [transform], image.shape[1:])
+            utils.transform_instance_annotations(annotation, [transform_lsst], lsst_image.shape[1:])
             for annotation in dataset_dict.pop("annotations")
             #if annotation["redshift"] != 0.0
         ]
 
-        instances = utils.annotations_to_instances(annos, image.shape[1:])
+        instances = utils.annotations_to_instances(annos, lsst_image.shape[1:])
 
-        instances.gt_redshift = torch.tensor([a["redshift"] for a in annos])
+        #instances.gt_redshift = torch.tensor([a["redshift"] for a in annos])
         
-        instances.gt_objid = torch.tensor([a["objectId"] for a in annos])
+        #instances.gt_objid = torch.tensor([a["objectId"] for a in annos])
 
         instances = utils.filter_empty_instances(instances)
         
@@ -67,11 +74,11 @@ class MocoDictMapper(DataMapper):
             # create the format that the model expects
             "image_lsst": lsst_image,
             "image_roman": roman_image,
-            "height": image.shape[1],
-            "width": image.shape[2],
+            "height": lsst_image.shape[1],
+            "width": lsst_image.shape[2],
             "image_id": dataset_dict["image_id"],
             "instances": instances,
             #"annotations": annos
-            "wcs": wcs
+            #"wcs": wcs
         }
     

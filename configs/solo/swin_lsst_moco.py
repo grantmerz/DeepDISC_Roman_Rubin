@@ -4,6 +4,7 @@ This uses template configs cascade_mask_rcnn_swin_b_in21k_50ep and yaml_style_de
 
 from omegaconf import OmegaConf
 import numpy as np
+import math
 # ---------------------------------------------------------------------------- #
 # Local variables and metadata
 # ---------------------------------------------------------------------------- #
@@ -24,7 +25,8 @@ numclasses = len(metadata.classes)
 from ..COCO.cascade_mask_rcnn_swin_b_in21k_50ep import dataloader, model, train, lr_multiplier, optimizer
 from detectron2.modeling import SwinTransformer
 
-from ..custom.image_readers import RomanRubinImageReader
+from ..custom.image_readers import RomanRubinImageReader, MoCoRomanRubinImageReader
+from ..custom.mappers import MocoDictMapper
 import deepdisc.model.loaders as loaders
 from deepdisc.data_format.augment_image import dc2_train_augs
 from deepdisc.data_format.image_readers import NumpyImageReader
@@ -32,7 +34,8 @@ from detectron2.config import LazyCall as L
 from ..custom.meta_arch import GeneralizedRCNNMoco
 
 # # Overrides
-train.init_checkpoint = "/projects/bdsp/yse2/model_final_246a82.pkl"
+#train.init_checkpoint = "/projects/bdsp/yse2/model_final_246a82.pkl"
+train.init_checkpoint='/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl'
 dataloader.augs = dc2_train_augs
 dataloader.train.total_batch_size = bs
 
@@ -40,14 +43,23 @@ model.proposal_generator.anchor_generator.sizes = [[8], [16], [32], [64], [128]]
 model.roi_heads.num_classes = numclasses
 model.roi_heads.batch_size_per_image = 512
 
-model.backbone.bottom_up.in_chans = 6
 
 model._target_ = GeneralizedRCNNMoco
 model.backbone_q = model.backbone
 model.backbone_k = model.backbone
+model.pop('backbone')
+model.pop('pixel_mean')
+model.pop('pixel_std')
+
+model.backbone_q.square_pad = 160
+model.backbone_k.square_pad = 512
+model.backbone_q.bottom_up.in_chans = 6
+model.backbone_k.bottom_up.in_chans = 3
+model.backbone_q.bottom_up.patch_size=4
+model.backbone_k.bottom_up.patch_size = math.ceil(model.backbone_k.square_pad/model.backbone_q.square_pad*model.backbone_q.bottom_up.patch_size)
 
 # LSST Data in 6 filters for 700 tiles
-model.pixel_mean = [
+model.lsst_pixel_mean = [
     0.0570717453956604,
     0.05500221252441406,
     0.07863432914018631,
@@ -56,13 +68,26 @@ model.pixel_mean = [
     0.21512146294116974,
 ]
 
-model.pixel_std = [
+model.lsst_pixel_std = [
     0.9746726155281067,
     0.6917527318000793,
     0.9822555184364319,
     1.382053017616272,
     1.8204920291900635,
     2.6324615478515625,
+]
+
+
+model.roman_pixel_mean = [
+    0.0570717453956604,
+    0.05500221252441406,
+    0.07863432914018631,
+]
+
+model.roman_pixel_std = [
+    0.9746726155281067,
+    0.6917527318000793,
+    0.9822555184364319,
 ]
 
 # LSST Data in 6 filters for 16 tiles
@@ -97,9 +122,14 @@ def roman_key_mapper(dataset_dict):
     return fn
 
 dataloader.key_mapper = roman_key_mapper
-dataloader.test.mapper = loaders.DictMapper
-dataloader.train.mapper = loaders.DictMapper
-reader = RomanRubinImageReader()
+
+#dataloader.test.mapper = loaders.DictMapper
+#dataloader.train.mapper = loaders.DictMapper
+
+dataloader.test.mapper = MocoDictMapper
+dataloader.train.mapper = MocoDictMapper
+
+reader = MoCoRomanRubinImageReader()
 dataloader.imagereader = reader
 dataloader.epoch=epoch
 # ---------------------------------------------------------------------------- #
