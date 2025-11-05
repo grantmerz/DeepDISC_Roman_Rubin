@@ -51,7 +51,8 @@ class GeneralizedRCNNMoco(nn.Module):
         m: float= 0.999, 
         T: float= 0.07,
         hidden_dim: int = 2048,
-        dim: int = 128
+        dim: int = 128,
+        moco_alpha: float=1.0
     ):
         """
         Args:
@@ -72,7 +73,7 @@ class GeneralizedRCNNMoco(nn.Module):
         #self.mlp = mlp
         #self.mlp = FeatureMapMLP(backbone_q.output_shape(),backbone_q._square_pad,hidden_dim,dim)
         outshape_q = backbone_q.output_shape()
-
+        self.moco_alpha = moco_alpha
         self.moco = MMMoCo(self.backbone_q, self.backbone_k, 
                            outshape_q, hidden_dim, dim=dim, K=K, m=m, T=T)
         self.infoNCE_loss = nn.CrossEntropyLoss()#.cuda(args.gpu)
@@ -196,7 +197,7 @@ class GeneralizedRCNNMoco(nn.Module):
         #have a flag here for if we have an image pair for moco loss 
         images_k = roman_images.tensor
         logits, labels = self.moco(features_q,images_k)
-        moco_loss = self.infoNCE_loss(logits,labels)
+        moco_loss = self.moco_alpha*self.infoNCE_loss(logits,labels)
 
 
         #features from the LSST encoder are sent to detection heads, if they have labels
