@@ -76,7 +76,7 @@ def main(args,freeze):
 
 
     #cfg.train.init_checkpoint='/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl'
-    cfg.train.init_checkpoint=None
+    #cfg.train.init_checkpoint=None
 
 
     # Iterations for 15, 25, 35, 50 epochs
@@ -109,7 +109,7 @@ def main(args,freeze):
     cfg.optimizer.params.model = model
 
 
-    filepath = '/projects/bdsp/truth-lsst/grant_4k.json'
+    filepath = '/work/hdd/bdsp/yse2/lsst_data/annotations_lvl5/val_4k.json'
     from deepdisc.data_format.file_io import DDLoader
     json_loader = DDLoader()
     ddicts = json_loader.load_coco_json_file(filepath).get_dataset()
@@ -130,8 +130,8 @@ def main(args,freeze):
     def rubin_roman_key_mapper(dataset_dict):
         key = dataset_dict["file_name"]
         im = os.path.basename(key)
-        lsst_key = os.path.join("/projects/bdsp/truth-lsst/51.52_-39.1/",im)
-        roman_key = os.path.join("/projects/bdsp/truth-roman/51.52_-39.1/",im)
+        lsst_key = os.path.join("/work/hdd/bdsp/yse2/lsst_data/truth/51.52_-39.1/",im)
+        roman_key = os.path.join("/work/hdd/bdsp/yse2/truth-roman/51.52_-39.1/",im)
 
         return lsst_key,roman_key
 

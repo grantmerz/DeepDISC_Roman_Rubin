@@ -35,7 +35,7 @@ from ..custom.meta_arch import GeneralizedRCNNMoco
 
 # # Overrides
 #train.init_checkpoint = "/projects/bdsp/yse2/model_final_246a82.pkl"
-train.init_checkpoint='/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl'
+train.init_checkpoint='/projects/bdsp/g4merz/cascade_mask_rcnn_swin_b_in21k_model_moco.pkl'
 dataloader.augs = dc2_train_augs
 dataloader.train.total_batch_size = bs
 
