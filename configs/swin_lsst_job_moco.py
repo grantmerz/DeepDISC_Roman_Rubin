@@ -81,9 +81,7 @@ Our strides are then [4, 8, 16, 32] and since the Detectron2's FPN implementatio
 the last/largest stride (strides[-1]) of our bottom-up backbone's output features, size_divisibility is set to 32.
     (You can double check with model.backbone_q.size_divisibility after instantiating the model with this config file)
 Thus, it's preferred that our image dimensions are divisible by 32.
-Our max Rubin size is 151x151 so we pad to 160x160 (32*5). 
-You can theoretically set square_pad to whatever you want, but setting it to a value not divisible by size_divisibility 
-just results in extra padding being added to make it divisible anyway.
+Our max Rubin size is 151x151 so we optimally calculate the square padding size to be 160x160 (32*5).
 """
 model.backbone_q.bottom_up.patch_size = 4
 query_size_div = 32 # query_patch_size * 2 ** (num of swin stages p0 p1 p2 p3 - 1)
@@ -109,14 +107,12 @@ LSST (160x160)
 | 3     | Patch Merging (stride x2)  | 10x10                     |
 | 4     | Patch Merging (stride x2)  | 5x5                       |
 
-So, instead, we increase the Roman patch size to be coarser. To find what the patch size should be, 
-let's find the ratio of the square_pad sizes:
-patch_size = 512 / 160 = 3.2 * 4 (the Rubin patch size) ~ 12.8, rounded up to 13
-But, if we pad to 520x520 instead of 512x512, we get the exact patch size of 13:
-patch_size = 520 / 160 = 3.25 * 4 = 13.
+So, instead, we increase the Roman patch size to be coarser. To find what the patch size should be,
+we use the square padded size of the query encoder to calculate what the largest feature map size would be
+and then divide the max_key_img_size by the feature map size.
 
-So, with this patch size of 13, our strides become [13, 26, 52, 104]. And having 520x520 also satisifies our
-preference of having our image dims divisible by size_divisibility (which should be 104 in this case): 104*5=520.
+So, with this patch size of 13, our strides become [13, 26, 52, 104]. And our calculated square padding size also satisifies our
+criteria of having our image dims divisible by size_divisibility (which would be 104 in this case): 104*5=520.
 This results in the following feature map sizes:
 Roman (520x520)
 | Stage | Layer                      | Output Spatial Resolution |
