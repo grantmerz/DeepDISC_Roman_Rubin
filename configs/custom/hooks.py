@@ -45,6 +45,9 @@ class TimedLossEvalHook(LossEvalHook):
         batch_inference_times = []
         losses = []
         losses_dicts = []
+        
+        was_training = self._model.training # save current mode
+        self._model.train() # to ensure we can do loss computation
 
         with torch.no_grad():
             for idx, inputs in enumerate(self._data_loader):
@@ -81,6 +84,8 @@ class TimedLossEvalHook(LossEvalHook):
                         f"Progress: {idx + 1}/{total} ({(idx+1)/total*100:.0f}%){warmup_marker} |"
                         f" Avg: {avg:.3f}s/batch | ETA: {eta:.1f}s"
                     )
+        if not was_training:
+            self._model.eval()
         total_time = time.perf_counter() - start_time
         
         # stats using post-warmup batches only
