@@ -6,24 +6,35 @@ from torch import nn
 
 from detectron2.config import configurable
 from detectron2.data.detection_utils import convert_image_to_rgb
-from detectron2.layers import move_device_like
+from detectron2.layers import move_device_like, ShapeSpec
 from detectron2.structures import ImageList, Instances
 from detectron2.utils.events import get_event_storage
-from detectron2.utils.logger import log_first_n
-from detectron2.layers import cat
 
-
+from detectron2.modeling import SwinTransformer
 from detectron2.modeling.backbone import Backbone, build_backbone
-from detectron2.modeling.postprocessing import detector_postprocess
-
 from detectron2.modeling.proposal_generator import build_proposal_generator
 from detectron2.modeling.roi_heads import build_roi_heads
+from detectron2.modeling.postprocessing import detector_postprocess
 
 
-
+class DynamicSwinTransformer(SwinTransformer):
+    """ Dynamically calculates strides based on the provided patch_size.
+    Detectron2's SwinTransformer hardcodes the initial stride as 4 (i.e., 2^2),
+    then doubles it for each patch merging stage. This works when patch_size=4
+    but breaks when using different patch sizes for different pixel scales.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # we need to dynamically set the out feature strides based on the given patch size
+        # otherwise, we will get issues with feature map sizes not matching in our FPN
+        # lateral_features and top_down_features specifically
+        self._out_feature_strides = {f"p{i}": (2 ** i) * self.patch_embed.patch_size[0] for i in self.out_indices}
+        # for patch size 13, strides are p0: 13, p1:26, p2:52, p3:104
+# adapted from detectron2/modeling/meta_arch/rcnn.py
 class GeneralizedRCNNMoco(nn.Module):
     """
-    Generalized R-CNN with Moco. Semi-supervised training, where contrastive loss and downstream task loss
+    Generalized R-CNN with Moco v2 for Roman-Rubin semi-supervised training, 
+    where contrastive loss and downstream task loss
     are computed
     
     Any models that contains the following three components:
@@ -36,23 +47,26 @@ class GeneralizedRCNNMoco(nn.Module):
     def __init__(
         self,
         *,
-        backbone_q: Backbone,
-        backbone_k: Backbone,
+        backbone_q: Backbone, # rubin - Query encoder providing us the features to be aligned
+        backbone_k: Backbone, # roman - Key/Momentum encoder providing us high-quality features as a ref
         #mlp: nn.Module,
         proposal_generator: nn.Module,
         roi_heads: nn.Module,
-        lsst_pixel_mean: Tuple[float],
-        lsst_pixel_std: Tuple[float],
+        rubin_pixel_mean: Tuple[float],
+        rubin_pixel_std: Tuple[float],
         roman_pixel_mean: Tuple[float],
         roman_pixel_std: Tuple[float],
         input_format: Optional[str] = None,
         vis_period: int = 0,
-        K: int =65536, 
+        # MoCo params
+        K: int =8192, 
         m: float= 0.999, 
         T: float= 0.07,
         hidden_dim: int = 2048,
         dim: int = 128,
-        moco_alpha: float=1.0
+        # loss weighting
+        moco_alpha: float = 1.0, # contrastive loss weight
+        beta: float = 1.0 # supervised loss weight
     ):
         """
         Args:
@@ -65,34 +79,69 @@ class GeneralizedRCNNMoco(nn.Module):
             vis_period: the period to run visualization. Set to 0 to disable.
         """
         super().__init__()
-        self.backbone_q = backbone_q
-        self.backbone_k = backbone_k
+        self.backbone_q = backbone_q # rubin
+        self.backbone_k = backbone_k # roman
         self.proposal_generator = proposal_generator
         self.roi_heads = roi_heads
         
-        #self.mlp = mlp
-        #self.mlp = FeatureMapMLP(backbone_q.output_shape(),backbone_q._square_pad,hidden_dim,dim)
         outshape_q = backbone_q.output_shape()
-        self.moco_alpha = moco_alpha
+        outshape_k = backbone_k.output_shape()
+        # Ok, so we also need to align FPN output features for MoCo. since diff patch sizes 
+        # cause different stride values FPN auto-names these features differently 
+        # (based on log2(stride)). But, we need matching names for MoCo. So, let's just manually
+        # rename key encoder's features to match query encoder's naming scheme
+        features_q_names = list(outshape_q.keys())
+        features_k_names = list(outshape_k.keys())
+        # align the feature names only if they don't match
+        if features_q_names != features_k_names:
+            print(f"Aligning feature names: {features_k_names} --> {features_q_names}")
+            # scaling ratio
+            patch_ratio = self.backbone_k.bottom_up.patch_embed.patch_size[0] / self.backbone_q.bottom_up.patch_embed.patch_size[0]
+            print(f"Patch size ratio (key/query): {patch_ratio:.2f}")
+            new_strides = {}
+            new_channels = {}
+            aligned_outshape_k = {}
+            for q_name, k_name in zip(features_q_names, features_k_names):
+                # new stride based on Query stride and Patch Ratio
+                # e.g., 32 (Query) * 3.25 (Ratio) = 104 (Key)
+                q_stride = outshape_q[q_name].stride
+                k_stride_scaled = int(q_stride * patch_ratio)
+                # channels from the existing Key backbone
+                k_channels = outshape_k[k_name].channels
+                print(f"  Mapping {k_name} --> {q_name}: Stride {outshape_k[k_name].stride} -> {k_stride_scaled}")
+                new_strides[q_name] = k_stride_scaled
+                new_channels[q_name] = k_channels
+                aligned_outshape_k[q_name] = ShapeSpec(channels=k_channels, stride=k_stride_scaled)
+            # backbone's internal metadata
+            self.backbone_k._out_features = list(new_strides.keys())
+            self.backbone_k._out_feature_strides = new_strides
+            self.backbone_k._out_feature_channels = new_channels
+            outshape_k = aligned_outshape_k
+            print(f"Final aligned features - Query: {list(outshape_q.keys())}, Key: {list(outshape_k.keys())}")
+        # ok now we should have everything aligned EXCEPT for the actual fpn and lateral 
+        # module names but those don't actually get used in FPN forward pass or in our MoCo so
+        # we keep them as is even though they're technically wrong names
         self.moco = MMMoCo(self.backbone_q, self.backbone_k, 
-                           outshape_q, hidden_dim, dim=dim, K=K, m=m, T=T)
+                           outshape_q, outshape_k, hidden_dim, dim=dim, K=K, m=m, T=T)
         self.infoNCE_loss = nn.CrossEntropyLoss()#.cuda(args.gpu)
+        
+        self.moco_alpha = moco_alpha
+        self.beta = beta
 
         self.input_format = input_format
         self.vis_period = vis_period
         if vis_period > 0:
             assert input_format is not None, "input_format is required for visualization!"
 
-        self.register_buffer("lsst_pixel_mean", torch.tensor(lsst_pixel_mean).view(-1, 1, 1), False)
-        self.register_buffer("lsst_pixel_std", torch.tensor(lsst_pixel_std).view(-1, 1, 1), False)
+        self.register_buffer("rubin_pixel_mean", torch.tensor(rubin_pixel_mean).view(-1, 1, 1), False)
+        self.register_buffer("rubin_pixel_std", torch.tensor(rubin_pixel_std).view(-1, 1, 1), False)
         self.register_buffer("roman_pixel_mean", torch.tensor(roman_pixel_mean).view(-1, 1, 1), False)
         self.register_buffer("roman_pixel_std", torch.tensor(roman_pixel_std).view(-1, 1, 1), False)
         assert (
-            self.lsst_pixel_mean.shape == self.lsst_pixel_std.shape  
-        ), f"{self.lsst_pixel_mean} and {self.lsst_pixel_std} have different shapes!"
-    
+            self.rubin_pixel_mean.shape == self.rubin_pixel_std.shape
+        ), f"{self.rubin_pixel_mean} and {self.rubin_pixel_std} have different shapes!"
         assert (
-            self.roman_pixel_mean.shape == self.roman_pixel_std.shape  
+            self.roman_pixel_mean.shape == self.roman_pixel_std.shape
         ), f"{self.roman_pixel_mean} and {self.roman_pixel_std} have different shapes!"
 
     @classmethod
@@ -104,16 +153,18 @@ class GeneralizedRCNNMoco(nn.Module):
             "roi_heads": build_roi_heads(cfg, backbone.output_shape()),
             "input_format": cfg.INPUT.FORMAT,
             "vis_period": cfg.VIS_PERIOD,
-            "pixel_mean": cfg.MODEL.PIXEL_MEAN,
-            "pixel_std": cfg.MODEL.PIXEL_STD,
+            "rubin_pixel_mean": cfg.MODEL.RUBIN_PIXEL_MEAN,
+            "rubin_pixel_std": cfg.MODEL.RUBIN_PIXEL_STD,
+            "roman_pixel_mean": cfg.MODEL.ROMAN_PIXEL_MEAN,
+            "roman_pixel_std": cfg.MODEL.ROMAN_PIXEL_STD
         }
 
     @property
     def device(self):
-        return self.lsst_pixel_mean.device
+        return self.rubin_pixel_mean.device
 
     def _move_to_current_device(self, x):
-        return move_device_like(x, self.lsst_pixel_mean)
+        return move_device_like(x, self.rubin_pixel_mean)
 
     def visualize_training(self, batched_inputs, proposals):
         """
@@ -176,49 +227,58 @@ class GeneralizedRCNNMoco(nn.Module):
         if not self.training:
             return self.inference(batched_inputs)
         
-        lsst_images, roman_images = self.preprocess_image(batched_inputs)
-
-        #have a condition here for if we have labelled data
+        # must pass in size_divisibility for both backbones since it'll be different for each backbone
+        # and we pass this in so that both Roman and Rubin can have teh same sized feature maps
+        images_q_rubin = self.preprocess_image(batched_inputs, "image_rubin", self.rubin_pixel_mean, 
+                                         self.rubin_pixel_std, self.backbone_q.size_divisibility, 
+                                         self.backbone_q.padding_constraints)
+        
+        # for first run we use all instances (100% labeled data)
         if "instances" in batched_inputs[0]:
             gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
         else:
             gt_instances = None
         
-        #if "wcs" in batched_inputs[0]:
-        #    image_wcs = [x["wcs"] for x in batched_inputs]
-        #else:
-        #    image_wcs = None
-
-
-
-        features_q = self.backbone_q(lsst_images.tensor)
-
-        # grab the features computed through the key encoder - don't need gradients
-        #have a flag here for if we have an image pair for moco loss 
-        images_k = roman_images.tensor
-        logits, labels = self.moco(features_q,images_k)
-        moco_loss = self.moco_alpha*self.infoNCE_loss(logits,labels)
-
-
-        #features from the LSST encoder are sent to detection heads, if they have labels
-
+        # we have to check if we have Roman data (training with MoCo) or just Rubin (validation loss)
+        has_roman_data = "image_roman" in batched_inputs[0]
+        
+        # run query backbone 
+        features_q = self.backbone_q(images_q_rubin.tensor)
+        
+        # calculate MoCo loss only if we have paired Roman data
+        if has_roman_data:
+            images_k_roman = self.preprocess_image(batched_inputs, "image_roman", self.roman_pixel_mean, 
+                                    self.roman_pixel_std, self.backbone_k.size_divisibility, 
+                                    self.backbone_k.padding_constraints)
+            # grab the features computed through the query encoder - don't need grads
+            # run moco with roman imgs as keys 
+            logits, labels = self.moco(features_q, images_k_roman.tensor)
+            moco_loss = self.moco_alpha * self.infoNCE_loss(logits, labels)
+        else:
+            # Validation mode: skip MoCo loss (no Roman data available)
+            moco_loss = None
+        
+        # features from the rubin encoder are sent to detection heads, if they have labels
         if self.proposal_generator is not None:
-            proposals, proposal_losses = self.proposal_generator(lsst_images, features_q, gt_instances)
+            proposals, proposal_losses = self.proposal_generator(images_q_rubin, features_q, gt_instances)
         else:
             assert "proposals" in batched_inputs[0]
             proposals = [x["proposals"].to(self.device) for x in batched_inputs]
             proposal_losses = {}
 
-        _, detector_losses = self.roi_heads(lsst_images, features_q, proposals, gt_instances)#, image_wcs)
-        if self.vis_period > 0:
-            storage = get_event_storage()
-            if storage.iter % self.vis_period == 0:
-                self.visualize_training(batched_inputs, proposals)
+        _, detector_losses = self.roi_heads(images_q_rubin, features_q, proposals, gt_instances)#, image_wcs)
+        # if self.vis_period > 0:
+        #     storage = get_event_storage()
+        #     if storage.iter % self.vis_period == 0:
+        #         self.visualize_training(batched_inputs, proposals)
         
         losses = {}
-        losses.update({"infoNCE_loss":moco_loss})
-        losses.update(detector_losses)
-        losses.update(proposal_losses)
+        # add MoCo loss only if computed (training w/ Roman data)
+        if moco_loss is not None:
+            losses.update({"infoNCE_loss": moco_loss})
+        # beta weight for supervised losses
+        losses.update({k: self.beta * v for k, v in detector_losses.items()})
+        losses.update({k: self.beta * v for k, v in proposal_losses.items()})
         return losses
 
     def inference(
@@ -244,56 +304,68 @@ class GeneralizedRCNNMoco(nn.Module):
             When do_postprocess=True, same as in :meth:`forward`.
             Otherwise, a list[Instances] containing raw network outputs.
         """
-        assert not self.training
-        if "wcs" in batched_inputs[0]:
-            image_wcs = [x["wcs"] for x in batched_inputs]
-        else:
-            image_wcs = None
-
-        images = self.preprocess_image(batched_inputs)
-        features = self.backbone_q(images.tensor)
+        assert not self.training, "Inference should only be called in eval mode"
+        # if "wcs" in batched_inputs[0]:
+        #     image_wcs = [x["wcs"] for x in batched_inputs]
+        # else:
+        #     image_wcs = None
+        # DictMapper returns "image", but we need to process it as Rubin data
+        # so we just gotta rename the key to match what our preprocessing expects
+        batched_inputs_renamed = []
+        for batch_item in batched_inputs:
+            renamed_item = {
+                "image_rubin": batch_item["image"],  # treating validation rubin as query encoder input
+                "height": batch_item["height"],
+                "width": batch_item["width"],
+                "image_id": batch_item.get("image_id", None),
+                "instances": batch_item.get("instances", None),
+            }
+            batched_inputs_renamed.append(renamed_item)
+        
+        # preprocess Rubin images (LSST validation data)
+        imgs_rubin = self.preprocess_image(
+            batched_inputs_renamed, 
+            "image_rubin", 
+            self.rubin_pixel_mean,
+            self.rubin_pixel_std, 
+            self.backbone_q.size_divisibility,
+            self.backbone_q.padding_constraints
+        )
+        # run through query encoder
+        features = self.backbone_q(imgs_rubin.tensor)
 
         if detected_instances is None:
             if self.proposal_generator is not None:
-                proposals, _ = self.proposal_generator(images, features, None)
+                proposals, _ = self.proposal_generator(imgs_rubin, features, None)
             else:
                 assert "proposals" in batched_inputs[0]
                 proposals = [x["proposals"].to(self.device) for x in batched_inputs]
 
-            results, _ = self.roi_heads(images, features, proposals, None)#, image_wcs=image_wcs)
+            results, _ = self.roi_heads(imgs_rubin, features, proposals, None)#, image_wcs=image_wcs)
         else:
             detected_instances = [x.to(self.device) for x in detected_instances]
             results = self.roi_heads.forward_with_given_boxes(features, detected_instances)
-            results = self.roi_heads._forward_redshift(features, results)#, image_wcs=image_wcs)
+            # results = self.roi_heads._forward_redshift(features, results)#, image_wcs=image_wcs)
     
         if do_postprocess:
             assert not torch.jit.is_scripting(), "Scripting is not supported for postprocess."
-            return self._postprocess(results, batched_inputs, images.image_sizes)
+            return self._postprocess(results, batched_inputs, imgs_rubin.image_sizes)
         return results
 
-    def preprocess_image(self, batched_inputs: List[Dict[str, torch.Tensor]]):
+    def preprocess_image(self, batched_inputs: List[Dict[str, torch.Tensor]], img_key, mean, 
+                         std, size_divisibility, padding_constraints):
         """
         Normalize, pad and batch the input images.
         """
-        lsst_images = [self._move_to_current_device(x["image_lsst"]) for x in batched_inputs]
-        lsst_images = [(x - self.lsst_pixel_mean) / self.lsst_pixel_std for x in lsst_images]
-        lsst_images = ImageList.from_tensors(
-            lsst_images,
-            self.backbone_q.size_divisibility,
-            padding_constraints=self.backbone_q.padding_constraints,
+        imgs = [self._move_to_current_device(x[img_key]) for x in batched_inputs]
+        imgs = [(x - mean) / std for x in imgs]
+        imgs = ImageList.from_tensors(
+            imgs,
+            size_divisibility,
+            padding_constraints=padding_constraints,
         )
-
-        roman_images = [self._move_to_current_device(x["image_roman"]) for x in batched_inputs]
-        roman_images = [(x - self.roman_pixel_mean) / self.roman_pixel_std for x in roman_images]
-        roman_images = ImageList.from_tensors(
-            roman_images,
-            self.backbone_k.size_divisibility,
-            padding_constraints=self.backbone_k.padding_constraints,
-        )
-
-        #print(images[0].size())
-        return lsst_images, roman_images
-
+        return imgs
+    
     @staticmethod
     def _postprocess(instances, batched_inputs: List[Dict[str, torch.Tensor]], image_sizes):
         """
@@ -310,10 +382,6 @@ class GeneralizedRCNNMoco(nn.Module):
             processed_results.append({"instances": r})
         return processed_results
 
-
-
-
-
 class FeatureMapMLP(nn.Module):
     def __init__(self,in_features,square_pad,hidden_dim,dim):
         super().__init__()
@@ -321,18 +389,20 @@ class FeatureMapMLP(nn.Module):
         self.in_features = in_features
         self.f_keys = list(self.in_features.keys())
         f_shapes = list(self.in_features.values())
+        print("FeatureMapMLP: in_features = ", in_features)
+        print("FeatureMapMLP: in_features keys = ", self.f_keys)
+        print("FeatureMapMLP: in_features shapes = ", f_shapes)
+        print("FeatureMapMLP: square_pad = ", square_pad)
         strides = [s.stride for s in f_shapes]
         channel = f_shapes[0].channels
         #assume kernel sizes of 4 for each 
         shapes = [(channel,(square_pad+s-1)//s,(square_pad+s-1)//s) for s in strides]
-        
+        print("FeatureMapMLP: calculated feature map shapes = ", shapes)
         #use all feature maps
         #self.fcls = {}
         #for i,f in enumerate(in_features.keys()):
         #    self.fcls[f] = nn.Linear(np.prod(shapes[i]),hidden_dim)
-
         #self.fcl_final = nn.Sequential(nn.Linear(hidden_dim,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,dim)),
-
 
         #take the features from the deepest feature map
         self.fcls = nn.Sequential(
@@ -341,12 +411,11 @@ class FeatureMapMLP(nn.Module):
             nn.Linear(hidden_dim,hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim,dim)
-            )
-
+        )
 
     def forward(self, features):
-        #take the features from all levels of the feature map and run them
-        #each through a fully connected layer.
+        # take the features from all levels of the feature map and run them
+        # each through a fully connected layer.
         
         #f_outs = []
 
@@ -361,13 +430,7 @@ class FeatureMapMLP(nn.Module):
         #just use the final feature map
         features = nn.Flatten()(features[self.f_keys[-1]])
         outputs = self.fcls(features)
-        
         return outputs
-
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
-import torch
-import torch.nn as nn
-
 
 class MMMoCo(nn.Module):
     """
@@ -375,10 +438,10 @@ class MMMoCo(nn.Module):
     https://arxiv.org/abs/1911.05722.  
     Uses multimodal images, so the query and key encoders will be slightly different
     """
-    def __init__(self, encoder_q, encoder_k, outshape_q, hidden_dim, dim, K=65536, m=0.999, T=0.07):
+    def __init__(self, encoder_q, encoder_k, outshape_q, outshape_k, hidden_dim, dim, K=8192, m=0.999, T=0.07):
         """
         dim: feature dimension (default: 128)
-        K: queue size; number of negative keys (default: 65536)
+        K: queue size; number of negative keys (default: 8192)
         m: moco momentum of updating key encoder (default: 0.999)
         T: softmax temperature (default: 0.07)
         self.backbone_q, self.backbone_k, 
@@ -390,52 +453,42 @@ class MMMoCo(nn.Module):
         self.m = m
         self.T = T
 
-        # assume the encoders are already created and initialized
-        #self.encoder_q = mode1_encoder
-        #self.encoder_k = mode2_encoder
-
-
-        #This assumes that the patch embedding has been fixed such that the feature maps of
+        # This assumes that the patch embedding has been fixed such that the feature maps of
         # both encoders are the same size.
 
-
-        #Check that sizes of final feature map will match
+        # Check that sizes of final feature map will match
         sp_q = encoder_q._square_pad
         sp_k = encoder_k._square_pad
         ps_q = encoder_q.bottom_up.patch_embed.patch_size[0]
         ps_k = encoder_k.bottom_up.patch_embed.patch_size[0]
-        pad_q = (ps_q - sp_q % ps_q) if sp_q%ps_q!=0 else 0
-        pad_k = (ps_k - sp_k % ps_k) if sp_k%ps_k!=0 else 0
-        size1 = (sp_q + pad_q -(ps_q-1)-1)/ps_q+1
-        size2 = (sp_k + pad_k -(ps_k-1)-1)/ps_k+1
-
+        pad_q = (ps_q - sp_q % ps_q) if sp_q % ps_q != 0 else 0
+        pad_k = (ps_k - sp_k % ps_k) if sp_k % ps_k != 0 else 0
+        size1 = (sp_q + pad_q -(ps_q - 1) -1)/ ps_q + 1
+        size2 = (sp_k + pad_k -(ps_k - 1) -1)/ ps_k + 1
         assert size1==size2, "Sizes of the feature maps should match.  Check the patch embedding or square padding of the encoders"
 
-        self.mlp_q = FeatureMapMLP(outshape_q,sp_q,hidden_dim,dim)
-        self.mlp_k = FeatureMapMLP(outshape_q,sp_q,hidden_dim,dim)
+        self.mlp_q = FeatureMapMLP(outshape_q, sp_q, hidden_dim, dim)
+        self.mlp_k = FeatureMapMLP(outshape_k, sp_k, hidden_dim, dim)
         
-        #add the mlp to the encoders to get the latent dim embeddings
-        self.encoder_q = nn.Sequential(encoder_q,self.mlp_q)
-        self.encoder_k = nn.Sequential(encoder_k,self.mlp_k)
-
-        for (name_q,param_q), (name_k,param_k) in zip(self.encoder_q.named_parameters(), self.encoder_k.named_parameters()):
-            #we need to exclude the patch embedding layer of the key encoder from this
-            #because the images sent into the key encoder will have different size/channels 
+        # add the mlp to the encoders to get the latent dim embeddings
+        self.encoder_q = nn.Sequential(encoder_q, self.mlp_q)
+        self.encoder_k = nn.Sequential(encoder_k, self.mlp_k)
+        for (name_q, param_q), (name_k, param_k) in zip(self.encoder_q.named_parameters(), self.encoder_k.named_parameters()):
+            # we need to exclude the patch embedding layer of the roman_key encoder from this
+            # because the images sent into the roman_key encoder will have different size/channels 
+            # (3 channels vs 6, 520x520 vs 160x160) means it can't copy from Rubin encoder
             if "bottom_up.patch_embed" in name_k:
-                param_k.requires_grad = True  
+                param_k.requires_grad = True # patch embedding has grad graph
                 continue
-
+            print(f"Copying param {name_q} to {name_k} for momentum encoder initialization")
             param_k.data.copy_(param_q.data)  # initialize (not really necessary if we use the same checkpoints)
-            param_k.requires_grad = False  # not updated by gradient
+            param_k.requires_grad = False  # not updated by gradient since it's a momentum encoder
 
         # create the queue
         self.register_buffer("queue", torch.randn(dim, K))
         self.queue = nn.functional.normalize(self.queue, dim=0)
-
         self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
-
         param_to_check = self.encoder_k[0].bottom_up.patch_embed.proj.weight
-
         # Register a buffer to store its value from the previous step
         # We use .data.clone() to get the values without grad history
         self.register_buffer("old_patch_embed_weight", param_to_check.data.clone())
@@ -445,29 +498,22 @@ class MMMoCo(nn.Module):
         """
         Momentum update of the key encoder
         """
-        for (name_q,param_q), (name_k,param_k) in zip(self.encoder_q.named_parameters(), self.encoder_k.named_parameters()):
-
-            #we need to exclude the patch embedding dimensions here as well
+        for (name_q, param_q), (name_k, param_k) in zip(self.encoder_q.named_parameters(), self.encoder_k.named_parameters()):
+            # we need to exclude the patch embedding dimensions here as well
             if "bottom_up.patch_embed" in name_k:
                 continue
-
             param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
 
     @torch.no_grad()
     def _dequeue_and_enqueue(self, keys):
         # gather keys before updating queue
         keys = concat_all_gather(keys)
-
         batch_size = keys.shape[0]
-
         ptr = int(self.queue_ptr)
-
         assert self.K % batch_size == 0  # for simplicity
-
         # replace the keys at ptr (dequeue and enqueue)
         self.queue[:, ptr:ptr + batch_size] = keys.T
         ptr = (ptr + batch_size) % self.K  # move pointer
-
         self.queue_ptr[0] = ptr
 
     @torch.no_grad()
@@ -480,22 +526,16 @@ class MMMoCo(nn.Module):
         batch_size_this = x.shape[0]
         x_gather = concat_all_gather(x)
         batch_size_all = x_gather.shape[0]
-
         num_gpus = batch_size_all // batch_size_this
-
         # random shuffle index
         idx_shuffle = torch.randperm(batch_size_all).cuda()
-
         # broadcast to all gpus
         torch.distributed.broadcast(idx_shuffle, src=0)
-
         # index for restoring
         idx_unshuffle = torch.argsort(idx_shuffle)
-
         # shuffled index for this gpu
         gpu_idx = torch.distributed.get_rank()
         idx_this = idx_shuffle.view(num_gpus, -1)[gpu_idx]
-
         return x_gather[idx_this], idx_unshuffle
 
     @torch.no_grad()
@@ -521,40 +561,30 @@ class MMMoCo(nn.Module):
         """
         Take in query features instead of images.  Keep key images as input
         so that we can make use of the shuffle batch norm
-
-
         Input:
             features_q: a batch of query features
             im_k: a batch of key images
         Output:
             logits, targets
         """
-
-        #Project the query features into the embedding space 
+        # Project the rubin_query features into the embedding space 
         q = self.mlp_q(features_q)  # queries: NxC
-
         q = nn.functional.normalize(q, dim=1)
-
-        # compute key features
-        #with torch.no_grad():  # no gradient to keys
+        # compute key features with no gradient
         self._momentum_update_key_encoder()  # update the key encoder
-
         
         # We have to remove the key shuffling because it breaks the gradient
-        #im_k, idx_unshuffle = self._batch_shuffle_ddp(im_k)
-        
+        # im_k, idx_unshuffle = self._batch_shuffle_ddp(im_k)
 
         k = self.encoder_k(im_k)  # keys: NxC
         k = nn.functional.normalize(k, dim=1)
-
         # undo shuffle
-        #with torch.no_grad():
-        #k = self._batch_unshuffle_ddp(k, idx_unshuffle)
-
+        # with torch.no_grad():
+        # k = self._batch_unshuffle_ddp(k, idx_unshuffle)
         # compute logits
         # Einstein sum is more intuitive
         # positive logits: Nx1
-        l_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1)
+        l_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1) # here k has grads only thru the patch embedding
         # negative logits: NxK
         l_neg = torch.einsum('nc,ck->nk', [q, self.queue.clone().detach()])
 
@@ -566,11 +596,12 @@ class MMMoCo(nn.Module):
 
         # labels: positive key indicators
         labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
-
+        # moco_loss has grad path: loss -> logits -> l_pos -> k -> patch_embed
+        # so in backward pass:
+        # grads flow back thru l_pos to k, then to encoder_k where only the patch embedding receives grads
+        # updating only the patch embedding of encoder_k with regular optimizer (AdamW) steps
         # dequeue and enqueue
         self._dequeue_and_enqueue(k.detach())
-
-        
         return logits, labels
 
 # utils
@@ -580,9 +611,6 @@ def concat_all_gather(tensor):
     Performs all_gather operation on the provided tensors.
     *** Warning ***: torch.distributed.all_gather has no gradient.
     """
-
-
-
     tensors_gather = [torch.ones_like(tensor)
         for _ in range(torch.distributed.get_world_size())]
     torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
