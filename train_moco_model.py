@@ -134,7 +134,17 @@ def main(args, freeze):
     if comm.is_main_process():
         np.save(f"{output_dir}/{run_name}_losses", trainer.lossList)
         np.save(f"{output_dir}/{run_name}_val_losses", trainer.vallossList)
-                
+    
+    # to avoid this warning:
+    # [rank0]:[W1212 09:05:12.615562415 ProcessGroupNCCL.cpp:1524] 
+    # Warning: WARNING: destroy_process_group() was not called before program exit, 
+    # which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+    
+    # make sure all processes are done before destroying the process group
+    comm.synchronize()
+    # destroy the default process group (on every rank)
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
     return
 
 if __name__ == "__main__":
