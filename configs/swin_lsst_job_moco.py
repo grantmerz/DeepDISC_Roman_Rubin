@@ -9,7 +9,13 @@ import math
 # Local variables and metadata
 # ---------------------------------------------------------------------------- #
 # bs: total batch size spread across multiple GPUs & make sure it's divisible by the number of GPUs
-bs = 4 # for 4 H200 GPUS with 140G memory each as each GPU can handle bs=48
+# 4 A100x4 GPUs --> bs = 64 (16 per gpu) (Max GPU util and ~85% GPU memory), test_bs = bs * 2
+# we must also ensure that per gpu batch size is divisible by K used in meta_arch.py
+# K=8192 for 30k set and 8192/16 = 512 so we can set bs = 64
+# bs = 64 
+# 4 H200 GPUS --> bs = 256 (64 per gpu) (Max GPU Util and ~87-95% GPU memory), test_bs = bs * 2 
+# K = 8192 for 30k and 8192/64 = 128 so we can set bs = 256
+bs = 256
 # steps_per_epoch = num of steps per epoch = num of training images / bs
 # a training step/iteration is when the model weights are updated (once per batch)
 num_imgs = 30000
@@ -33,7 +39,7 @@ from ..custom.meta_arch import GeneralizedRCNNMoco, DynamicSwinTransformer
 
 # Overrides of the template COCO config
 # This is the cascade mask rcnn of an ImageNet-swin_base_patch4_window7_224_21k model
-train.init_checkpoint = "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl"
+train.init_checkpoint = "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_moco_model.pkl"
 # for TimedLazyAstroTrainer (all in iters)
 train.timing_report_period = steps_per_epoch // 2 # report every n iters (for testing, 5)
 train.timing_rolling_window_size = steps_per_epoch // 2 # average over last n iters (for testing, 5)
@@ -42,6 +48,8 @@ train.timing_save_period = steps_per_epoch # save timing to disk every n iters (
 dataloader.augs = dc2_train_augs
 dataloader.train.total_batch_size = bs
 # when bs=96, bs * 6 but when bs=144, bs * 6 crashed so using bs * 4 and for bs=192, bs * 2
+# dataloader.test.total_batch_size = bs * 2 # higher since no gradients being calculated
+# two encoders double the memory usage, so reducing test batch size compared to baseline run
 dataloader.test.total_batch_size = bs * 2 # higher since no gradients being calculated
 dataloader.test.num_workers = 16
 
@@ -54,7 +62,6 @@ model.backbone.bottom_up._target_ = DynamicSwinTransformer
 model._target_ = GeneralizedRCNNMoco
 model.backbone_q = model.backbone # query is Rubin
 model.backbone_k = model.backbone # key is Roman
-
 model.pop('backbone')
 model.pop('pixel_mean')
 model.pop('pixel_std')
@@ -81,7 +88,9 @@ Our strides are then [4, 8, 16, 32] and since the Detectron2's FPN implementatio
 the last/largest stride (strides[-1]) of our bottom-up backbone's output features, size_divisibility is set to 32.
     (You can double check with model.backbone_q.size_divisibility after instantiating the model with this config file)
 Thus, it's preferred that our image dimensions are divisible by 32.
-Our max Rubin size is 151x151 so we optimally calculate the square padding size to be 160x160 (32*5).
+Our max Rubin size is 151x151 so we pad to 160x160 (32*5). 
+You can theoretically set square_pad to whatever you want, but setting it to a value not divisible by size_divisibility 
+just results in extra padding being added to make it divisible anyway.
 """
 model.backbone_q.bottom_up.patch_size = 4
 query_size_div = 32 # query_patch_size * 2 ** (num of swin stages p0 p1 p2 p3 - 1)
@@ -107,12 +116,14 @@ LSST (160x160)
 | 3     | Patch Merging (stride x2)  | 10x10                     |
 | 4     | Patch Merging (stride x2)  | 5x5                       |
 
-So, instead, we increase the Roman patch size to be coarser. To find what the patch size should be,
-we use the square padded size of the query encoder to calculate what the largest feature map size would be
-and then divide the max_key_img_size by the feature map size.
+So, instead, we increase the Roman patch size to be coarser. To find what the patch size should be, 
+let's find the ratio of the square_pad sizes:
+patch_size = 512 / 160 = 3.2 * 4 (the Rubin patch size) ~ 12.8, rounded up to 13
+But, if we pad to 520x520 instead of 512x512, we get the exact patch size of 13:
+patch_size = 520 / 160 = 3.25 * 4 = 13.
 
-So, with this patch size of 13, our strides become [13, 26, 52, 104]. And our calculated square padding size also satisifies our
-criteria of having our image dims divisible by size_divisibility (which would be 104 in this case): 104*5=520.
+So, with this patch size of 13, our strides become [13, 26, 52, 104]. And having 520x520 also satisifies our
+preference of having our image dims divisible by size_divisibility (which should be 104 in this case): 104*5=520.
 This results in the following feature map sizes:
 Roman (520x520)
 | Stage | Layer                      | Output Spatial Resolution |
@@ -128,6 +139,10 @@ max_key_img_size = 512
 query_feature_size = model.backbone_q.square_pad // model.backbone_q.bottom_up.patch_size  # 160/4 = 40
 model.backbone_k.bottom_up.patch_size = math.ceil(max_key_img_size / query_feature_size)  # ceil(512/40) = 13
 model.backbone_k.square_pad = query_feature_size * model.backbone_k.bottom_up.patch_size  # 40*13 = 520
+
+# setting MoCo specific parameters
+model.K = 8192  # queue size
+
 # from rubin training data of 109,782 imgs
 # model.pixel_mean = [
 #     0.057071752846241,
@@ -208,7 +223,7 @@ reader = DualRomanRubinImageReader()
 eval_reader = RomanRubinImageReader()
 dataloader.train.imagereader = reader
 dataloader.test.imagereader = eval_reader
-dataloader.epoch = steps_per_epoch
+dataloader.steps_per_epoch = steps_per_epoch
 # ---------------------------------------------------------------------------- #
 # Yaml-style config (was formerly saved as a .yaml file, loaded to cfg_loader)
 # ---------------------------------------------------------------------------- #

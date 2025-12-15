@@ -108,7 +108,7 @@ class GeneralizedRCNNMoco(nn.Module):
                 k_stride_scaled = int(q_stride * patch_ratio)
                 # channels from the existing Key backbone
                 k_channels = outshape_k[k_name].channels
-                print(f"  Mapping {k_name} --> {q_name}: Stride {outshape_k[k_name].stride} -> {k_stride_scaled}")
+                # print(f"  Mapping {k_name} --> {q_name}: Stride {outshape_k[k_name].stride} -> {k_stride_scaled}")
                 new_strides[q_name] = k_stride_scaled
                 new_channels[q_name] = k_channels
                 aligned_outshape_k[q_name] = ShapeSpec(channels=k_channels, stride=k_stride_scaled)
@@ -389,15 +389,10 @@ class FeatureMapMLP(nn.Module):
         self.in_features = in_features
         self.f_keys = list(self.in_features.keys())
         f_shapes = list(self.in_features.values())
-        print("FeatureMapMLP: in_features = ", in_features)
-        print("FeatureMapMLP: in_features keys = ", self.f_keys)
-        print("FeatureMapMLP: in_features shapes = ", f_shapes)
-        print("FeatureMapMLP: square_pad = ", square_pad)
         strides = [s.stride for s in f_shapes]
         channel = f_shapes[0].channels
         #assume kernel sizes of 4 for each 
         shapes = [(channel,(square_pad+s-1)//s,(square_pad+s-1)//s) for s in strides]
-        print("FeatureMapMLP: calculated feature map shapes = ", shapes)
         #use all feature maps
         #self.fcls = {}
         #for i,f in enumerate(in_features.keys()):
@@ -480,7 +475,7 @@ class MMMoCo(nn.Module):
             if "bottom_up.patch_embed" in name_k:
                 param_k.requires_grad = True # patch embedding has grad graph
                 continue
-            print(f"Copying param {name_q} to {name_k} for momentum encoder initialization")
+            # print(f"Copying param {name_q} to {name_k} for momentum encoder initialization")
             param_k.data.copy_(param_q.data)  # initialize (not really necessary if we use the same checkpoints)
             param_k.requires_grad = False  # not updated by gradient since it's a momentum encoder
 

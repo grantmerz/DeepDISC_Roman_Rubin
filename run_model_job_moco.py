@@ -84,11 +84,11 @@ def main(args, freeze):
     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
     
     # Iterations for 15, 25, 35, 50 epochs
-    # steps_per_epoch = cfg.dataloader.steps_per_epoch
-    steps_per_epoch = 2
+    # steps_per_epoch = 2 for testing
+    steps_per_epoch = cfg.dataloader.steps_per_epoch
     e1 = steps_per_epoch * 15
-    # e2 = steps_per_epoch * 25
-    # e3 = steps_per_epoch * 35
+    e2 = steps_per_epoch * 25
+    e3 = steps_per_epoch * 35
     efinal = steps_per_epoch * 50
     # e1 = steps_per_epoch
     # e2 = steps_per_epoch * 2
@@ -102,8 +102,8 @@ def main(args, freeze):
     ).map_data
     loader = return_train_loader(cfg, mapper)
     # for validation 
-    # val_per = steps_per_epoch
-    val_per = 10
+    # val_per = 10 for testing
+    val_per = steps_per_epoch
     eval_mapper = cfg.dataloader.test.mapper(
         cfg.dataloader.test.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
     ).map_data
@@ -112,7 +112,8 @@ def main(args, freeze):
     # if freeze:
     # setting up epochs and learning rate for training all layers
     # cfg.SOLVER.STEPS = [e1,e2,e3]
-    cfg.SOLVER.STEPS = [e1]
+    # cfg.SOLVER.STEPS = [e1] for testing
+    cfg.SOLVER.STEPS = [e1, e2, e3]
     cfg.SOLVER.MAX_ITER = efinal
     
     cfg.optimizer.lr = 0.001
@@ -124,14 +125,13 @@ def main(args, freeze):
     # lossHook = return_evallosshook(5, model, eval_loader)
     lossHook = return_timed_evallossHook(val_per, model, eval_loader)
     
-    # hookList = [schedulerHook, saveHook]
     hookList = [lossHook, schedulerHook, saveHook]
-    
     trainer = return_timed_lazy_trainer(model, loader, optimizer, cfg, hookList)
-    # trainer.set_period(steps_per_epoch // 2)
-    # trainer.train(0, cfg.SOLVER.MAX_ITER)
-    trainer.set_period(5)
-    trainer.train(0, 20) # for testing
+    trainer.set_period(steps_per_epoch // 2)
+    trainer.train(0, cfg.SOLVER.MAX_ITER)
+    # for testing
+    # trainer.set_period(10)
+    # trainer.train(0, 20) 
     if comm.is_main_process():
         np.save(f"{output_dir}/{run_name}_losses", trainer.lossList)
         np.save(f"{output_dir}/{run_name}_val_losses", trainer.vallossList)
