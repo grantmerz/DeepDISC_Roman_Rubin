@@ -365,7 +365,7 @@ def inference(num_gpus, cfg_file, run_name,
                     'score': det_scores,
                     'rle_masks': det_rle_masks
                 }
-                output_file = f'{run_dir}/pred_s{test_score_thresh}_n{nms_thresh}.json'
+                output_file = f'{run_dir}/preds/pred_s{test_score_thresh}_n{nms_thresh}.json'
                 with open(output_file, 'w') as f:
                     json.dump(dd_det_cat, f, indent=2)
                 # pd.DataFrame(dd_det_cat).to_json(output_file)
