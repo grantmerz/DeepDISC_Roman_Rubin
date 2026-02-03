@@ -48,7 +48,7 @@ echo "Score thresholds: ${SCORE_THRESHOLDS[@]}"
 echo "NMS thresholds: ${NMS_THRESHOLDS[@]}"
 
 # with default params w/ varying thresholds
-python preprocess_eval_data_gpu.py \
+python inference.py \
     --score_thresholds ${SCORE_THRESHOLDS[@]} \
     --nms_thresholds ${NMS_THRESHOLDS[@]} \
     --num_gpus 4
