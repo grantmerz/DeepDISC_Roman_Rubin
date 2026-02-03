@@ -1,55 +1,64 @@
 #!/bin/bash
-#SBATCH --job-name="evaluate_model"
-#SBATCH --output="eval_out.%j.%N.out"
-#SBATCH --error="eval_err.%j.%N.err"
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
+#SBATCH -J hp_eval
+#SBATCH --output=/projects/bfhm/yse2/logs/inference/hp_infer_out.%j.%N.out
+#SBATCH --error=/projects/bfhm/yse2/logs/inference/hp_infer_err.%j.%N.err
+#SBATCH --account=bdsp-delta-gpu
+#SBATCH --partition=gpuA100x8
+#SBATCH --gres=gpu:4
+#SBATCH --constraint="projects,work"
 #SBATCH --nodes=1
-#SBATCH --mem=90G
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=32
-#SBATCH --time=0:50:00
+#SBATCH --cpus-per-task=64       # 64 CPUs divided by GPUs for data loading
+#SBATCH --mem=128G
+#SBATCH --time=06:30:00
 #SBATCH --mail-user=yse2@illinois.edu
 #SBATCH --mail-type=ALL
 
-module load conda_base
-conda activate deepdisc
+echo "Job Started: $(date)"
+echo "Node: $(hostname)"
+echo "Job ID: $SLURM_JOB_ID"
+echo "GPUs: $CUDA_VISIBLE_DEVICES"
+
 cd ~
-
-echo "LD_LIBRARY_PATH BEFORE: $LD_LIBRARY_PATH\n"
-
-# gets rid of CUBLAS_GEMM_UNSUPPORTED ERRORS by removing incompatible cuda versions
-export LD_LIBRARY_PATH=$(echo $LD_LIBRARY_PATH | tr ':' '\n' | grep -v "cuda-11.3" | tr '\n' ':')
-export LD_LIBRARY_PATH=$(echo $LD_LIBRARY_PATH | tr ':' '\n' | grep -v "cuda-12" | tr '\n' ':')
-
-echo "LD_LIBRARY_PATH AFTER: $LD_LIBRARY_PATH\n"
-
+# GPU and CUDA checks
 # clears GPU cache to avoid Cublas errors
-python -c "import torch; torch.cuda.empty_cache(); print('cuda version: ', torch.version.cuda); print(torch.backends.cudnn.version())" 
-# Driver Version: 550.54.15      CUDA Version: 12.4  on node6 and node16 and node 14
+echo "Checking CUDA and GPU status..."
+python -c "import torch; torch.cuda.empty_cache(); print('PyTorch CUDA version: ', torch.version.cuda); print('CuDNN version:', torch.backends.cudnn.version())"
+
 # output current GPUs
 echo "Running on GPUs:"
-nvidia-smi  | head -n10
-nvidia-smi --query-gpu=gpu_name,gpu_bus_id --format=csv
+nvidia-smi --query-gpu=gpu_name,gpu_bus_id,memory.total,memory.used --format=csv
+echo "Defining inference parameters..."
+# locations of config and data files
+CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_lsst_job.py"
+RUN_NAME="lsst5_30k_4h200_bs192_ep50"
+TEST_DATA_FN="/u/yse2/lsst_data/annotations_lvl5/test_8k.json"
+TOPK_PER_IMG=2000
+# SCORE_THRESHOLDS=(0.4)
+# NMS_THRESHOLDS=(0.3)
+SCORE_THRESHOLDS=(0.2 0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75 0.8 0.85 0.9)
+NMS_THRESHOLDS=(0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75)
 
-# RUN 5 - Lvl5
+echo "Launching DeepDISC training job..."
+echo "Config file: ${CFG_FILE}"
+echo "Run name: ${RUN_NAME}"
+echo "Test data file: ${TEST_DATA_FN}"
+echo "Top K per image: ${TOPK_PER_IMG}"
+echo "Score thresholds: ${SCORE_THRESHOLDS[@]}"
+echo "NMS thresholds: ${NMS_THRESHOLDS[@]}"
 
-# python preprocess_eval_data.py --folder annotations --scale False --run_dir run5_sm_dlvl5 --config_file ./deepdisc/configs/solo/swin_lsst.py --model_path ./lsst_runs/run5_sm_dlvl5/lsst_dlvl5.pth
-
-# python preprocess_eval_data.py --folder annotationsc-ups --scale True --run_dir run5_ups_roman_dlvl5 --config_file ./deepdisc/configs/solo/swinc_lsst_ups.py --model_path ./lsst_runs/run5_ups_roman_dlvl5/lsstc_ups_dlvl5.pth
-
-# RUN 6 - Lvl6
-
-python preprocess_eval_data.py --folder annotations-lvl2 --scale False --run_dir run6_sm_dlvl2 --config_file ./deepdisc/configs/solo/swin_lsst.py --model_path ./lsst_runs/run6_sm_dlvl2/lsst_dlvl2.pth
-
-python preprocess_eval_data.py --folder annotationsc-ups-lvl2 --scale True --run_dir run6_ups_roman_dlvl2 --config_file ./deepdisc/configs/solo/swinc_lsst_ups.py --model_path ./lsst_runs/run6_ups_roman_dlvl2/lsstc_ups_dlvl2.pth
-
-
-# -test_score_thresh 0.45 --nms 0.5
-# exclude=hal01,hal02,hal09
-
-# --exclude=hal09,hal11,hal14
-# --nodelist=hal09, hal14
- 
-
+# with default params w/ varying thresholds
+python preprocess_eval_data_gpu.py \
+    --score_thresholds ${SCORE_THRESHOLDS[@]} \
+    --nms_thresholds ${NMS_THRESHOLDS[@]} \
+    --num_gpus 4
+# with all params
+# python preprocess_eval_data_gpu.py \
+#     --cfgfile ${CFG_FILE} \
+#     --run_name ${RUN_NAME} \
+#     --test_data_fn ${TEST_DATA_FN} \
+#     --topk_per_img ${TOPK_PER_IMG} \
+#     --score_thresholds ${SCORE_THRESHOLDS[@]} \
+#     --nms_thresholds ${NMS_THRESHOLDS[@]} \
+#     --num_gpus 4 
  
