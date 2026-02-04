@@ -44,59 +44,6 @@ class SimpleMapper(DataMapper):
             "image_id": dataset_dict["image_id"]
         }
 
-
-class DictMapperWithKeypoints(DataMapper):
-    """Class that will map COCO dictionary data to the format necessary for the model"""
-
-    def __init__(self, *args, **kwargs):
-        # Pass arguments to the parent function.
-        super().__init__(*args, **kwargs)
-
-    def map_data(self, dataset_dict):
-        """Map COCO dict data to the correct format
-
-        Parameters
-        ----------
-        dataset_dict: dict
-            a dictionary of COCO formatted metadata
-
-        Returns
-        -------
-        reformatted dictionary including image and instances
-        """
-
-        dataset_dict = copy.deepcopy(dataset_dict)
-        key = self.km(dataset_dict)
-        image = self.IR(key)
-
-        # Data Augmentation
-        auginput = T.AugInput(image)
-        # Transformations to model shapes
-        if self.augmentations is not None:
-            augs = self.augmentations(image)
-        else:
-            augs = T.AugmentationList([])
-        transform = augs(auginput)
-        image = torch.from_numpy(auginput.image.copy().transpose(2, 0, 1))
-        annos = [
-            utils.transform_instance_annotations(annotation, [transform], image.shape[1:],keypoint_hflip_indices=[0])
-            for annotation in dataset_dict.pop("annotations")
-        ]
-
-        instances = utils.annotations_to_instances(annos, image.shape[1:])
-        instances = utils.filter_empty_instances(instances)
-
-        return {
-            # create the format that the model expects
-            "image": image,
-            "image_shaped": auginput.image,
-            "height": image.shape[1],
-            "width": image.shape[2],
-            "image_id": dataset_dict["image_id"],
-            "instances": instances,
-        }
-
-
 class FileNameMapper(DictMapper):
     """Adds file names in the dataset.
     Args:
@@ -197,6 +144,72 @@ class MoCoMapper(DataMapper):
         }
         return result
 
+class MoCoRubinMapper(DataMapper):
+    """
+    Data mapper for MoCo training with LSST-LSST pairs.
+    Handles both labeled and unlabeled data.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def map_data(self, dataset_dict):
+        """
+        Map COCO dict data to format for MoCo + detection training
+        
+        Parameters
+        ----------
+        dataset_dict: dict
+            COCO formatted metadata with LSST paths
+            
+        Returns
+        -------
+        dict with 'rubin_image', 'roman_image', and optionally 'instances'
+        """
+        dataset_dict = copy.deepcopy(dataset_dict)
+        rubin_fns = self.km(dataset_dict)
+        # file paths for both modalities
+        filenames = {
+            'rubin_path': rubin_fns,
+            'roman_path': rubin_fns
+        }
+        # loading in both imgs using DualRomanRubinImageReader
+        rubin_imgs, rubin_imgs_2 = self.IR(filenames)
+        # apply augmentations to Rubin/Roman images (same augs for both but will have slightly different transforms)
+        rubin_auginput = T.AugInput(rubin_imgs)
+        rubin_auginput_2 = T.AugInput(rubin_imgs_2)
+        if self.augmentations is not None:
+            rubin_augs = self.augmentations(rubin_imgs)
+            rubin_augs_2 = self.augmentations(rubin_imgs_2)
+        else:
+            rubin_augs = T.AugmentationList([])
+            rubin_augs_2 = T.AugmentationList([])
+        # same transformations to ensure spatial consistency
+        transform_rubin = rubin_augs(rubin_auginput) # modifies rubin auginput in place
+        rubin_img = torch.from_numpy(rubin_auginput.image.copy().transpose(2, 0, 1))
+        
+        transform_rubin_2 = rubin_augs_2(rubin_auginput_2) # modifies rubin auginput in place
+        rubin_img_2 = torch.from_numpy(rubin_auginput_2.image.copy().transpose(2, 0, 1))
+        
+        annos = [
+            utils.transform_instance_annotations(
+                annotation, [transform_rubin], rubin_img.shape[1:]
+            )
+            for annotation in dataset_dict.pop('annotations')
+        ]
+        instances = utils.annotations_to_instances(annos, rubin_img.shape[1:])
+        instances = utils.filter_empty_instances(instances)
+        # and we don't modify rubin_img_2 annotations since we only use rubin for detection
+        result = {
+            'image_rubin': rubin_img,
+            'image_roman': rubin_img_2,
+            'height': rubin_img.shape[1],
+            'width': rubin_img.shape[2],
+            'image_id': dataset_dict['image_id'],
+            'instances': instances
+        }
+        return result
+
 
 class MoCoEvalMapper(DataMapper):
     """
@@ -252,3 +265,22 @@ class MoCoEvalMapper(DataMapper):
             'instances': instances
         }
         return result
+
+    
+class MoCoTestMapper(MoCoEvalMapper):
+    """
+    Data mapper for MoCo testing with just LSST data.
+    
+    This mapper builds on top of MoCoEvalMapper and returns file names and WCS info as well.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def map_data(self, dataset_dict):
+        # calling the map_data method from the parent class (MoCoEvalMapper)
+        # This will do all the image loading, augmentations, and instance transformations
+        d = super().map_data(dataset_dict)
+        d['file_name'] = dataset_dict['file_name']
+        d['wcs'] = dataset_dict['wcs']
+        return d
