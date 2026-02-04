@@ -145,7 +145,7 @@ def main(args, freeze):
     # for testing
     trainer.set_period(100)
     # trainer.set_period(150)
-    trainer.train(0, 1000) 
+    trainer.train(0, 1000)
     if comm.is_main_process():
         np.save(f"{output_dir}/{run_name}_losses", trainer.lossList)
         np.save(f"{output_dir}/{run_name}_val_losses", trainer.vallossList)
