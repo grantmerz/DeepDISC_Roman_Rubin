@@ -15,7 +15,8 @@ from detectron2.modeling.backbone import Backbone, build_backbone
 from detectron2.modeling.proposal_generator import build_proposal_generator
 from detectron2.modeling.roi_heads import build_roi_heads
 from detectron2.modeling.postprocessing import detector_postprocess
-
+from detectron2.config import instantiate
+from detectron2.engine.defaults import create_ddp_model
 
 class DynamicSwinTransformer(SwinTransformer):
     """ Dynamically calculates strides based on the provided patch_size.
@@ -314,7 +315,7 @@ class GeneralizedRCNNMoco(nn.Module):
         batched_inputs_renamed = []
         for batch_item in batched_inputs:
             renamed_item = {
-                "image_rubin": batch_item["image"],  # treating validation rubin as query encoder input
+                "image_rubin": batch_item["image_rubin"],  # treating validation rubin as query encoder input
                 "height": batch_item["height"],
                 "width": batch_item["width"],
                 "image_id": batch_item.get("image_id", None),
@@ -427,6 +428,7 @@ class FeatureMapMLP(nn.Module):
         outputs = self.fcls(features)
         return outputs
 
+# two imgs --> embedding spaces over iters
 class MMMoCo(nn.Module):
     """
     Build a MoCo model with: a query encoder, a key encoder, and a queue
@@ -471,9 +473,8 @@ class MMMoCo(nn.Module):
         for (name_q, param_q), (name_k, param_k) in zip(self.encoder_q.named_parameters(), self.encoder_k.named_parameters()):
             # we need to exclude the patch embedding layer of the roman_key encoder from this
             # because the images sent into the roman_key encoder will have different size/channels 
-            # (3 channels vs 6, 520x520 vs 160x160) means it can't copy from Rubin encoder
+            # (3 channels vs 6, 520x520 vs 160x160) means it can't copy from Rubin encoder since the dimensions won't match
             if "bottom_up.patch_embed" in name_k:
-                param_k.requires_grad = True # patch embedding has grad graph
                 continue
             # print(f"Copying param {name_q} to {name_k} for momentum encoder initialization")
             param_k.data.copy_(param_q.data)  # initialize (not really necessary if we use the same checkpoints)
@@ -569,13 +570,16 @@ class MMMoCo(nn.Module):
         self._momentum_update_key_encoder()  # update the key encoder
         
         # We have to remove the key shuffling because it breaks the gradient
+        # we can enable now since no grad
         # im_k, idx_unshuffle = self._batch_shuffle_ddp(im_k)
 
         k = self.encoder_k(im_k)  # keys: NxC
         k = nn.functional.normalize(k, dim=1)
+        
         # undo shuffle
         # with torch.no_grad():
-        # k = self._batch_unshuffle_ddp(k, idx_unshuffle)
+        #     k = self._batch_unshuffle_ddp(k, idx_unshuffle)
+        
         # compute logits
         # Einstein sum is more intuitive
         # positive logits: Nx1
@@ -613,3 +617,63 @@ def concat_all_gather(tensor):
     output = torch.cat(tensors_gather, dim=0)
 
     return output
+
+def return_frozen_model(cfg, freeze=True):
+    """Return a model formed from a LazyConfig with the backbone
+    frozen. Only the MLP/patch embedding layers will be trained.
+    
+    Currently, the key encoder isn't rly updating bc of param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
+    Parameters
+    ----------
+    cfg : .py file
+        a LazyConfig
+
+    Returns
+    -------
+        torch model
+    """
+    model = instantiate(cfg.model)
+    # freezing pre-trained swin body, only training input layers (patch_embed) and heads (mlp)
+    print("DEBUG: Executing Test 2 - Freezing Backbone, Training Patch Embeddings and MLPs Only")
+    for name, param in model.named_parameters():
+        # freeze everything first
+        param.requires_grad = False
+        # query backbone updated 
+        if "_q" in name:
+            print(f"  Gradient Training Enabled: {name}")
+        # Exception 1: The Input Layers (Patch Embeddings - Both Roman and Rubin need to learn adapters)
+        # We need these to learn how to map pixels to the pre-trained feature space
+        if "patch_embed" in name:
+            param.requires_grad = True
+            print(f"  Training Enabled: {name}")
+        # Exception 2: The MoCo Projection Heads (MLP)
+        # These need to learn the contrastive embedding space
+        # only train the query mlp since the key mlp is updated via momentum so let's keep it frozen
+        if "moco.mlp_q" in name:
+            param.requires_grad = True
+            print(f"  Training Enabled: {name}")
+
+    model.to(cfg.train.device)
+    model = create_ddp_model(model, **cfg.train.ddp)
+    return model
+
+def return_unfrozen_model(cfg, freeze=False):
+    """
+    Phase 2 Model:
+    - Rubin (Query): Fully Unfrozen (Backbone + Patch Embed + MLP) --> Trains with Gradients
+    - Roman (Key): Fully Frozen (Backbone + Patch Embed + MLP) --> Updates via Momentum
+    """
+    model = instantiate(cfg.model)
+    # print("DEBUG: Executing Phase 2 - Unfreezing Rubin, Keeping Roman Frozen")
+    for name, param in model.named_parameters():
+        # turn grads on for EVERYTHING
+        param.requires_grad = True
+        # Exception: Freeze the entire Roman Key Encoder making it updated via MOMENTUM
+        # The Key patch_embed is STATIC (no momentum, no gradients)
+        # if "_k" in name:
+        #     param.requires_grad = False
+        #     print(f"  Gradient Training Disabled: {name}")
+    
+    model.to(cfg.train.device)
+    model = create_ddp_model(model, **cfg.train.ddp)
+    return model
