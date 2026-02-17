@@ -284,3 +284,85 @@ class MoCoTestMapper(MoCoEvalMapper):
         d['file_name'] = dataset_dict['file_name']
         d['wcs'] = dataset_dict['wcs']
         return d
+
+class DP1Mapper(DataMapper):
+    """
+    Data mapper for DP1 (Data Preview 1) inference on LSST data.
+    
+    This mapper is specifically designed for running inference on DP1 datasets and differs
+    from the base DataMapper in the following ways:
+    - Intended for inference/testing rather than training
+    - Because this is solely for inference, it does NOT filter empty instances since 
+    we set no ground truth annotations for DP1 test data
+    """
+    
+    def __init__(self, *args, **kwargs):
+        """Initialize DP1Mapper with same parameters as base DataMapper."""
+        super().__init__(*args, **kwargs)
+    
+    def map_data(self, dataset_dict):
+        """
+        Map COCO dict data to format for DP1 inference.
+        
+        This method loads and processes a single image with its annotations, applying
+        augmentations and transformations
+        
+        Parameters
+        ----------
+        dataset_dict : dict
+            COCO formatted metadata with LSST paths, including:
+            - file_name or other image key
+            - annotations: list of annotation dicts
+            - image_id: unique identifier
+            
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - image: torch.Tensor of shape (C, H, W) - transformed image
+            - image_shaped: np.ndarray - augmented image in HWC format
+            - height: int - image height in pixels
+            - width: int - image width in pixels  
+            - image_id: unique image identifier
+            - instances: Instances object with all annotations (not filtered)
+        """
+        # copy to avoid modifying the original dataset dict
+        dataset_dict = copy.deepcopy(dataset_dict)
+        # Extract the key for loading the image (e.g., file path)
+        key = self.km(dataset_dict)
+        # Load the image using the configured image reader
+        image = self.IR(key)
+        # Prepare augmentation input wrapper
+        auginput = T.AugInput(image)
+        # Apply augmentations if configured, otherwise use empty list
+        if self.augmentations is not None:
+            augs = self.augmentations(image)
+        else:
+            augs = T.AugmentationList([])
+        # Apply the augmentation transforms to the image
+        transform = augs(auginput)
+        # Convert augmented image to torch tensor in CHW format
+        image = torch.from_numpy(auginput.image.copy().transpose(2, 0, 1))
+        # Transform annotations to match the augmented image geometry
+        annos = [
+            utils.transform_instance_annotations(annotation, [transform], image.shape[1:])
+            for annotation in dataset_dict.pop("annotations")
+        ]
+        # Convert annotations to Instances object
+        instances = utils.annotations_to_instances(annos, image.shape[1:])
+        # NOTE: Unlike DataMapper, we do NOT filter empty instances for DP1 inference
+        # This ensures no entry is discarded and we don't get this error from dp1_inference.py:
+        # , in get_detection_dataset_dicts
+        #     assert len(dataset_dicts), "No valid data found in {}.".format(",".join(names))
+        # AssertionError: No valid data found in test.
+        return {
+            # create the format that the model expects
+            "image": image,  # Tensor for model input
+            "image_shaped": auginput.image,
+            "height": image.shape[1],
+            "width": image.shape[2],
+            "image_id": dataset_dict["image_id"],
+            "instances": instances,
+            "file_name": dataset_dict["file_name"],
+            "wcs": dataset_dict["wcs"]
+        }
