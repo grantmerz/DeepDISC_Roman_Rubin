@@ -13,7 +13,8 @@ import math
 # we must also ensure that per gpu batch size is divisible by K used in meta_arch.py
 # K=8192 for 30k set and 8192/16 = 512 so we can set bs = 64
 # for stage 1 freeze, using same bs means only 50% GPU memory usage so in the future, we could change queue size K to get higher bs as 32/GPU runs out of memory
-bs = 16
+#bs = 64
+bs = 32
 
 # 4 H200 GPUS --> bs = 256 (64 per gpu) (Max GPU Util and ~87-95% GPU memory), test_bs = bs * 2 
 # K = 8192 for 30k and 8192/64 = 128 so we can set bs = 256
@@ -32,13 +33,18 @@ numclasses = len(metadata.classes)
 # ---------------------------------------------------------------------------- #
 # Get values from templates
 from ..COCO.cascade_mask_rcnn_swin_b_in21k_50ep import dataloader, model, train, lr_multiplier, optimizer
-from ..custom.image_readers import DualRubinRubinImageReader, RomanRubinImageReader
-from ..custom.mappers import MoCoRubinMapper, MoCoEvalMapper
+from ..custom.image_readers import DualRubinRubinImageReader, DualRomanRubinImageReader, RomanRubinImageReader
+from ..custom.mappers import MoCoRubinMapper, MoCoMapper, MoCoEvalMapper 
 import deepdisc.model.loaders as loaders
 
 from deepdisc.data_format.augment_image import dc2_train_augs
-from ..custom.meta_arch_test3 import GeneralizedRCNNMoco, DynamicSwinTransformer
+from ..custom.meta_arch_test import GeneralizedRCNNMultimodal, DynamicSwinTransformer
 from ..custom.roiheads import ContrastiveCascadeROIHeads
+from detectron2.layers import ShapeSpec
+from detectron2.modeling.poolers import ROIPooler
+from detectron2.modeling.roi_heads import KRCNNConvDeconvUpsampleHead
+from detectron2.config import LazyCall as L
+
 
 # Overrides of the template COCO config
 # This is the cascade mask rcnn of an ImageNet-swin_base_patch4_window7_224_21k model
@@ -67,15 +73,41 @@ model.proposal_generator.anchor_generator.sizes = [[8], [16], [32], [64], [128]]
 model.roi_heads.num_classes = numclasses
 model.roi_heads.batch_size_per_image = 512
 
+
+
+#Keypoint ROI head taken from the config on detectron2 repo 
+model.roi_heads.update(
+    keypoint_in_features=["p2", "p3", "p4", "p5"],
+    keypoint_pooler=L(ROIPooler)(
+        output_size=14,
+        scales=(1.0 / 4, 1.0 / 8, 1.0 / 16, 1.0 / 32),
+        sampling_ratio=0,
+        pooler_type="ROIAlignV2",
+    ),
+    keypoint_head=L(KRCNNConvDeconvUpsampleHead)(
+        input_shape=ShapeSpec(channels=256, width=14, height=14),
+        num_keypoints=1,
+        conv_dims=[512] * 8,
+        loss_normalizer="visible",
+    ),
+)
+
+#Keypoint AP degrades (though box AP improves) when using plain L1 loss
+for box_predictor in model.roi_heads.box_predictors:
+    box_predictor.smooth_l1_beta = 0.5
+
+
 # use _target_ to only swap the class type but keeps existing args from parent config
 model.roi_heads._target_ = ContrastiveCascadeROIHeads
 model.roi_heads.contrastive_dim =128
 model.roi_heads.contrastive_hidden_dim= 1024
 model.roi_heads.contrastive_weight =1.0
 model.roi_heads.temperature=0.07
+#model.roi_heads.in_channels = 256
+
 #--------------------------------------------------------
 model.backbone.bottom_up._target_ = DynamicSwinTransformer 
-model._target_ = GeneralizedRCNNMoco
+model._target_ = GeneralizedRCNNMultimodal
 model.backbone_q = model.backbone # query is Rubin
 model.backbone_k = model.backbone # key is Roman
 model.pop('backbone')
@@ -85,7 +117,7 @@ model.pop('pixel_std')
 # change the param weight names in the checkpoint to match our architecture
 
 model.backbone_q.bottom_up.in_chans = 6 # ugrizy for Rubin
-model.backbone_k.bottom_up.in_chans = 6 # Y106, J129, H158 for Roman
+model.backbone_k.bottom_up.in_chans = 3 # Y106, J129, H158 for Roman
 # using gradient checkpointing to save memory
 # works by not storing intermediate activations for each layer, 
 # instead recomputing them during the backward pass. 
@@ -151,19 +183,13 @@ Roman (520x520)
 exactly matching the Rubin feature map sizes.
 """
 # dynamically calculate based on max Roman image size
-# max_key_img_size = 151
-# query_feature_size = model.backbone_q.square_pad // model.backbone_q.bottom_up.patch_size  # 160/4 = 40
-model.backbone_k.bottom_up.patch_size = 4 # math.ceil(max_key_img_size / query_feature_size)  # ceil(512/40) = 13
-model.backbone_k.square_pad = model.backbone_q.square_pad # query_feature_size * model.backbone_k.bottom_up.patch_size  # 40*13 = 520
+max_key_img_size = 512
+query_feature_size = model.backbone_q.square_pad // model.backbone_q.bottom_up.patch_size  # 160/4 = 40
+model.backbone_k.bottom_up.patch_size = math.ceil(max_key_img_size / query_feature_size)  # ceil(512/40) = 13
+model.backbone_k.square_pad = query_feature_size * model.backbone_k.bottom_up.patch_size  # 40*13 = 520
 
-# setting MoCo specific parameters
-#model.K = 8192  # queue size
-model.K = 1024  # queue size
-model.T = 0.05  # temperature
+model.beta = 1.0 # supervised loss weight
 
-model.beta = 1.0 # turning off supervised losses for testing
-model.moco_alpha = 0.05 # weight for MoCo loss
-# setting both to 1.0 seems like the gradient updates are being dominated by the detection losses 
 
 # from rubin training data of 109,782 imgs
 # model.pixel_mean = [
@@ -209,38 +235,38 @@ model.rubin_pixel_std = [
 #     1.3112748861312866,
 # ]
 # model.roman_pixel_std = [
-#     30.78483772277832,
-#     32.28873062133789,
-#     32.14747619628906,
+#      30.78483772277832,
+#      32.28873062133789,
+#      32.14747619628906,
 # ]
 
 # for 30k training set
-model.roman_pixel_mean = [
-    0.05976027995347977,
-    0.056569650769233704,
-    0.0808037668466568,
-    0.11346549540758133,
-    0.14247749745845795,
-    0.22078551352024078,
-]
-model.roman_pixel_std = [
-    1.0054351091384888,
-    0.7062947750091553,
-    1.0013556480407715,
-    1.4049317836761475,
-    1.8567354679107666,
-    2.689509153366089,
-]
 # model.roman_pixel_mean = [
-#     1.0947377681732178,
-#     1.2559534311294556,
-#     1.3356200456619263,
+#     0.05976027995347977,
+#     0.056569650769233704,
+#     0.0808037668466568,
+#     0.11346549540758133,
+#     0.14247749745845795,
+#     0.22078551352024078,
 # ]
 # model.roman_pixel_std = [
-#     31.218294143676758,
-#     32.78688049316406,
-#     32.67300796508789,
+#    1.0054351091384888,
+#    0.7062947750091553,
+#     1.0013556480407715,
+#    1.4049317836761475,
+#     1.8567354679107666,
+#     2.689509153366089,
 # ]
+model.roman_pixel_mean = [
+    1.0947377681732178,
+    1.2559534311294556,
+    1.3356200456619263,
+]
+model.roman_pixel_std = [
+    31.218294143676758,
+    32.78688049316406,
+    32.67300796508789,
+]
 
 model.proposal_generator.nms_thresh = 0.3
 for box_predictor in model.roi_heads.box_predictors:
@@ -257,13 +283,16 @@ def lsst_key_mapper(dataset_dict):
     return k
 
 dataloader.key_mapper = lsst_key_mapper
-dataloader.train.mapper = MoCoRubinMapper
+dataloader.train.mapper = MoCoMapper
 dataloader.test.mapper = MoCoEvalMapper
-reader = DualRubinRubinImageReader()
+reader = DualRomanRubinImageReader()
 eval_reader = RomanRubinImageReader()
 dataloader.train.imagereader = reader
 dataloader.test.imagereader = eval_reader
 dataloader.steps_per_epoch = steps_per_epoch
+dataloader.train.keypoints = True
+dataloader.test.keypoints = True
+
 # ---------------------------------------------------------------------------- #
 # Yaml-style config (was formerly saved as a .yaml file, loaded to cfg_loader)
 # ---------------------------------------------------------------------------- #

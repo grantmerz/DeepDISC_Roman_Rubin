@@ -13,7 +13,7 @@ import math
 # we must also ensure that per gpu batch size is divisible by K used in meta_arch.py
 # K=8192 for 30k set and 8192/16 = 512 so we can set bs = 64
 # for stage 1 freeze, using same bs means only 50% GPU memory usage so in the future, we could change queue size K to get higher bs as 32/GPU runs out of memory
-bs = 16
+bs = 64
 
 # 4 H200 GPUS --> bs = 256 (64 per gpu) (Max GPU Util and ~87-95% GPU memory), test_bs = bs * 2 
 # K = 8192 for 30k and 8192/64 = 128 so we can set bs = 256
@@ -37,8 +37,13 @@ from ..custom.mappers import MoCoRubinMapper, MoCoEvalMapper
 import deepdisc.model.loaders as loaders
 
 from deepdisc.data_format.augment_image import dc2_train_augs
-from ..custom.meta_arch_test3 import GeneralizedRCNNMoco, DynamicSwinTransformer
+from ..custom.meta_arch_test3 import GeneralizedRCNNMultimodal, DynamicSwinTransformer
 from ..custom.roiheads import ContrastiveCascadeROIHeads
+from detectron2.layers import ShapeSpec
+from detectron2.modeling.poolers import ROIPooler
+from detectron2.modeling.roi_heads import KRCNNConvDeconvUpsampleHead
+from detectron2.config import LazyCall as L
+
 
 # Overrides of the template COCO config
 # This is the cascade mask rcnn of an ImageNet-swin_base_patch4_window7_224_21k model
@@ -67,15 +72,41 @@ model.proposal_generator.anchor_generator.sizes = [[8], [16], [32], [64], [128]]
 model.roi_heads.num_classes = numclasses
 model.roi_heads.batch_size_per_image = 512
 
+
+
+#Keypoint ROI head taken from the config on detectron2 repo 
+model.roi_heads.update(
+    keypoint_in_features=["p2", "p3", "p4", "p5"],
+    keypoint_pooler=L(ROIPooler)(
+        output_size=14,
+        scales=(1.0 / 4, 1.0 / 8, 1.0 / 16, 1.0 / 32),
+        sampling_ratio=0,
+        pooler_type="ROIAlignV2",
+    ),
+    keypoint_head=L(KRCNNConvDeconvUpsampleHead)(
+        input_shape=ShapeSpec(channels=256, width=14, height=14),
+        num_keypoints=1,
+        conv_dims=[512] * 8,
+        loss_normalizer="visible",
+    ),
+)
+
+#Keypoint AP degrades (though box AP improves) when using plain L1 loss
+for box_predictor in model.roi_heads.box_predictors:
+    box_predictor.smooth_l1_beta = 0.5
+
+
 # use _target_ to only swap the class type but keeps existing args from parent config
 model.roi_heads._target_ = ContrastiveCascadeROIHeads
 model.roi_heads.contrastive_dim =128
 model.roi_heads.contrastive_hidden_dim= 1024
 model.roi_heads.contrastive_weight =1.0
 model.roi_heads.temperature=0.07
+#model.roi_heads.in_channels = 256
+
 #--------------------------------------------------------
 model.backbone.bottom_up._target_ = DynamicSwinTransformer 
-model._target_ = GeneralizedRCNNMoco
+model._target_ = GeneralizedRCNNMultimodal
 model.backbone_q = model.backbone # query is Rubin
 model.backbone_k = model.backbone # key is Roman
 model.pop('backbone')
@@ -156,14 +187,8 @@ exactly matching the Rubin feature map sizes.
 model.backbone_k.bottom_up.patch_size = 4 # math.ceil(max_key_img_size / query_feature_size)  # ceil(512/40) = 13
 model.backbone_k.square_pad = model.backbone_q.square_pad # query_feature_size * model.backbone_k.bottom_up.patch_size  # 40*13 = 520
 
-# setting MoCo specific parameters
-#model.K = 8192  # queue size
-model.K = 1024  # queue size
-model.T = 0.05  # temperature
+model.beta = 1.0 # supervised loss weight
 
-model.beta = 1.0 # turning off supervised losses for testing
-model.moco_alpha = 0.05 # weight for MoCo loss
-# setting both to 1.0 seems like the gradient updates are being dominated by the detection losses 
 
 # from rubin training data of 109,782 imgs
 # model.pixel_mean = [
@@ -264,6 +289,9 @@ eval_reader = RomanRubinImageReader()
 dataloader.train.imagereader = reader
 dataloader.test.imagereader = eval_reader
 dataloader.steps_per_epoch = steps_per_epoch
+dataloader.train.keypoints = True
+dataloader.test.keypoints = True
+
 # ---------------------------------------------------------------------------- #
 # Yaml-style config (was formerly saved as a .yaml file, loaded to cfg_loader)
 # ---------------------------------------------------------------------------- #
