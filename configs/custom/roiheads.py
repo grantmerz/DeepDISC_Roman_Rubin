@@ -14,31 +14,49 @@ from torch.distributions.independent import Independent
 from torch.distributions.mixture_same_family import MixtureSameFamily
 from torch.distributions.normal import Normal
 
-from dustmaps.sfd import SFDQuery
 
-class RedshiftPDFCasROIHeadsJWSTBandLimit(CascadeROIHeads):
-    """CascadeROIHead with added redshift pdf capability.  Follows the detectron2 CascadeROIHead class init, except for
+from typing import List
+import torch
+import torch.nn.functional as F
+from torch import nn
 
-    Parameters
-    ----------
-    num_components : int
-        Number of gaussian components in the Mixture Density Network
+from detectron2.layers import cat
+from detectron2.modeling.roi_heads import CascadeROIHeads
+from detectron2.modeling.poolers import ROIPooler
+
+
+class ROIContrastiveHead(nn.Module):
+    def __init__(self, in_dim, hidden_dim=1024, out_dim=128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, out_dim),
+        )
+
+    def forward(self, x):
+        z = self.net(x)
+        return F.normalize(z, dim=1)
+
+
+class ContrastiveCascadeROIHeads(CascadeROIHeads):
+    """
+    Cascade ROI heads with ROI-level contrastive loss between
+    query/key encoder features.
     """
 
-    # def __init__(self, cfg, input_shape):
     def __init__(
         self,
-        num_components: int,
-        zloss_factor: float,
-        zmin: int,
-        zmax: int,
-        zn: int,
+        contrastive_dim: int,
+        contrastive_hidden_dim: int,
+        contrastive_weight: float,
+        temperature: float,
         *,
         box_in_features: List[str],
         box_pooler: ROIPooler,
         box_heads: List[nn.Module],
         box_predictors: List[nn.Module],
-        proposal_matchers: List[Matcher],
+        proposal_matchers,
         **kwargs,
     ):
         super().__init__(
@@ -50,141 +68,87 @@ class RedshiftPDFCasROIHeadsJWSTBandLimit(CascadeROIHeads):
             **kwargs,
         )
 
-        self.redshift_pooler = ROIPooler(
+        self.contrastive_weight = contrastive_weight
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1/temperature))
+
+        self.feature_pooler = ROIPooler(
             output_size=7,
             scales=tuple(k for k in [0.25, 0.125, 0.0625, 0.03125]),
             sampling_ratio=0,
             pooler_type="ROIAlignV2",
         )
 
-        in_channels = 256
-        inshape = ShapeSpec(channels=in_channels, height=7, width=7)
 
-        self._output_size = (inshape.channels, inshape.height, inshape.width)
-        self.num_components = num_components
-        self.zloss_factor = zloss_factor
-        self.zmin = zmin
-        self.zmax = zmax
-        self.zn = zn
-        
-        self.redshift_fc = nn.Sequential(
-            nn.Linear(np.prod(self._output_size)+1, 1024),
-            nn.Tanh(),
-            nn.Linear(1024, 64),
-            nn.Tanh(),
-            nn.Linear(64, self.num_components * 3),
-            #nn.Softplus()
+        # infer box head output dim
+        self.in_channels = 256
+
+
+        self.proj_q = ROIContrastiveHead(
+            self.in_channels, contrastive_hidden_dim, contrastive_dim
         )
-        
-
-        self.sfd = SFDQuery()
-
-        
-        
-    def output_pdf(self, inputs):
-        pdf = Independent(
-            MixtureSameFamily(
-                mixture_distribution=Categorical(logits=inputs[..., : self.num_components]),
-                component_distribution=Normal(
-                    inputs[..., self.num_components : 2 * self.num_components],
-                    #F.softplus(inputs[..., 2 * self.num_components :]),
-                    torch.exp(inputs[..., 2 * self.num_components :]),
-                ),
-            ),
-            0,
+        self.proj_k = ROIContrastiveHead(
+            self.in_channels, contrastive_hidden_dim, contrastive_dim
         )
-        return pdf
 
-    def _forward_redshift(self, features, instances, targets=None, image_wcs=None):
-        
+
+
+    def forward_contrastive(self, features_q, features_k, proposals, targets):
+        """
+        Compute ROI contrastive loss using SAME proposals.
+        """
+
         if self.training:
-            #Add all gt bounding boxes for redshift regression
-            proposals = add_ground_truth_to_proposals(targets, instances)
-            finstances, _ = select_foreground_proposals(proposals, self.num_classes)
+            #Add all gt bounding boxes for contrastive loss
+            proposals = add_ground_truth_to_proposals(targets, proposals)
+            instances, _ = select_foreground_proposals(proposals, self.num_classes)
 
-            instances = []
-            for x in finstances:
-                z_inst = x[(x.gt_redshift != -1) & (x.gt_num_missing!=8)]
-                instances.append(z_inst)
 
-                
-        if self.redshift_pooler is not None:
-            features = [features[f] for f in self.box_in_features]
+        if sum(len(p) for p in instances) == 0:
+            return {"roi_contrastive_loss": torch.tensor(0.0, device=list(features_q.values())[0].device)}
+
+
+        if self.feature_pooler is not None:
+            features_q = [features_q[f] for f in self.box_in_features]
             boxes = [x.proposal_boxes if self.training else x.pred_boxes for x in instances]
-            features = self.redshift_pooler(features, boxes)
-        
-        features = nn.Flatten()(features)
-        
-        num_instances_per_img = [len(i) for i in instances]
-        inds = np.cumsum(num_instances_per_img)
-        
-        print(num_instances_per_img)
-        if self.training:
-            if np.all(np.array(num_instances_per_img)==0):
-                return {"redshift_loss": torch.tensor(0).to(features.device)}
-        
-        #Add EBV
-        centers = cat([box.get_centers().cpu() for box in boxes]) # Center box coords for wcs             
-        #calculates coords for box centers in each image. Need to split and cumsum to make sure the box centers get the right wcs  
-        coords = [WCS(wcs).pixel_to_world(np.split(centers,inds)[i][:,0],np.split(centers,inds)[i][:,1]) for i, wcs in enumerate(image_wcs)] 
-        #use dustamps to get all ebv with the associated coords
-        ebvvec = [torch.tensor(self.sfd(coordsi)).to(features.device) for coordsi in coords]
-        ebvs = cat(ebvvec)
-        #gather into a tensor and add as a feature for the input to the fully connected network
-        features = torch.cat((features, ebvs.unsqueeze(1)), dim=-1)
+            features_q = self.feature_pooler(features_q, boxes)
 
-        if self.training:
-            fcs = self.redshift_fc(features)
-            pdfs = self.output_pdf(fcs)
+            features_k = [features_k[f] for f in self.box_in_features]
+            boxes = [x.proposal_boxes if self.training else x.pred_boxes for x in instances]
+            features_k = self.feature_pooler(features_k, boxes)
 
-            gt_redshifts = cat([x.gt_redshift for x in instances])
-            nlls = -pdfs.log_prob(gt_redshifts) * self.zloss_factor
 
-            return {"redshift_loss": torch.mean(nlls)}
+        features_q = nn.AdaptiveMaxPool2d((1, 1))(features_q)
+        features_q = torch.flatten(features_q, 1)
 
-        else:
-            # print(len(instances))
-            # print(len(instances[0]))
-            if len(instances[0]) == 0 and len(instances)==1:
-                for i, pred_instances in enumerate(instances):
-                    pred_instances.pred_redshift_pdf=torch.tensor([]).to(features.device)
-                    pred_instances.pred_gmm=torch.tensor([]).to(features.device)
-                return instances
-                
-            fcs = self.redshift_fc(features)
-            pdfs = self.output_pdf(fcs)
-            zs = torch.tensor(np.linspace(self.zmin, self.zmax, self.zn)).to(fcs.device)
-            nin = torch.as_tensor(np.array([num_instances_per_img]))
+        features_k = nn.AdaptiveMaxPool2d((1, 1))(features_k)
+        features_k = torch.flatten(features_k, 1)
 
-            inds = np.cumsum(num_instances_per_img)
+        z_q = self.proj_q(features_q)
+        z_k = self.proj_k(features_k)
 
-            probs = torch.zeros((torch.sum(nin), self.zn)).to(fcs.device)
-            for j, z in enumerate(zs):
-                probs[:, j] = pdfs.log_prob(z)
+        logits = (z_q @ z_k.T) * self.logit_scale
+        labels = torch.arange(len(z_q), device=z_q.device)
 
-            for i, pred_instances in enumerate(instances):
-                pred_instances.pred_redshift_pdf = np.split(probs,inds)[i]
-                pred_instances.pred_gmm =  np.split(fcs,inds)[i]
+        loss_qk = F.cross_entropy(logits, labels)
+        loss_kq = F.cross_entropy(logits.T, labels)
 
-            return instances
+        loss = 0.5 * (loss_qk + loss_kq)
 
-    def forward(self, images, features, proposals, targets=None, image_wcs=None):
+        return {"roi_contrastive_loss": loss * self.contrastive_weight}
+
+    def forward(self, images, features_q, proposals, targets=None, image_wcs=None):
         del images
         if self.training:
             proposals = self.label_and_sample_proposals(proposals, targets)
 
         if self.training:
             # Need targets to box head
-            losses = self._forward_box(features, proposals, targets)
-            losses.update(self._forward_mask(features, proposals))
-            losses.update(self._forward_redshift(features, proposals, targets, image_wcs))
-            #losses.update(self._forward_redshift(features, proposals))
-            losses.update(self._forward_keypoint(features, proposals))
+            losses = self._forward_box(features_q, proposals, targets)
+            losses.update(self._forward_mask(features_q, proposals))
+            losses.update(self._forward_keypoint(features_q, proposals))
+            #losses.update(self.forward_contrastive(features_q, features_k, proposals, targets))
             return proposals, losses
         else:
-            pred_instances = self._forward_box(features, proposals)
-            pred_instances = self.forward_with_given_boxes(features, pred_instances)
-            pred_instances = self._forward_redshift(features, pred_instances, image_wcs=image_wcs)
+            pred_instances = self._forward_box(features_q, proposals)
+            pred_instances = self.forward_with_given_boxes(features_q, pred_instances)
             return pred_instances, {}
-
-        

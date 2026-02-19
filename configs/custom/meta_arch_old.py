@@ -17,8 +17,6 @@ from detectron2.modeling.roi_heads import build_roi_heads
 from detectron2.modeling.postprocessing import detector_postprocess
 from detectron2.config import instantiate
 from detectron2.engine.defaults import create_ddp_model
-from detectron2.layers import ShapeSpec, cat
-
 
 class DynamicSwinTransformer(SwinTransformer):
     """ Dynamically calculates strides based on the provided patch_size.
@@ -34,9 +32,7 @@ class DynamicSwinTransformer(SwinTransformer):
         self._out_feature_strides = {f"p{i}": (2 ** i) * self.patch_embed.patch_size[0] for i in self.out_indices}
         # for patch size 13, strides are p0: 13, p1:26, p2:52, p3:104
 # adapted from detectron2/modeling/meta_arch/rcnn.py
-
-# adapted from detectron2/modeling/meta_arch/rcnn.py
-class GeneralizedRCNNMultimodal(nn.Module):
+class GeneralizedRCNNMoco(nn.Module):
     """
     Generalized R-CNN with Moco v2 for Roman-Rubin semi-supervised training, 
     where contrastive loss and downstream task loss
@@ -57,13 +53,21 @@ class GeneralizedRCNNMultimodal(nn.Module):
         #mlp: nn.Module,
         proposal_generator: nn.Module,
         roi_heads: nn.Module,
-        beta: float = 1.0, # supervised loss weight
         rubin_pixel_mean: Tuple[float],
         rubin_pixel_std: Tuple[float],
         roman_pixel_mean: Tuple[float],
         roman_pixel_std: Tuple[float],
         input_format: Optional[str] = None,
         vis_period: int = 0,
+        # MoCo params
+        K: int =8192, 
+        m: float= 0.999, 
+        T: float= 0.07,
+        hidden_dim: int = 2048,
+        dim: int = 128,
+        # loss weighting
+        moco_alpha: float = 1.0, # contrastive loss weight
+        beta: float = 1.0 # supervised loss weight
     ):
         """
         Args:
@@ -118,10 +122,11 @@ class GeneralizedRCNNMultimodal(nn.Module):
         # ok now we should have everything aligned EXCEPT for the actual fpn and lateral 
         # module names but those don't actually get used in FPN forward pass or in our MoCo so
         # we keep them as is even though they're technically wrong names
-        #self.moco = MMClip(self.backbone_q, self.backbone_k, 
-        #                   outshape_q, outshape_k, hidden_dim, dim=dim, K=K, m=m, T=T)
+        self.moco = MMMoCo(self.backbone_q, self.backbone_k, 
+                           outshape_q, outshape_k, hidden_dim, dim=dim, K=K, m=m, T=T)
+        self.infoNCE_loss = nn.CrossEntropyLoss()#.cuda(args.gpu)
         
-        #self.moco_alpha = moco_alpha
+        self.moco_alpha = moco_alpha
         self.beta = beta
 
         self.input_format = input_format
@@ -241,7 +246,19 @@ class GeneralizedRCNNMultimodal(nn.Module):
         # run query backbone 
         features_q = self.backbone_q(images_q_rubin.tensor)
         
-
+        # calculate MoCo loss only if we have paired Roman data
+        if has_roman_data:
+            images_k_roman = self.preprocess_image(batched_inputs, "image_roman", self.roman_pixel_mean, 
+                                    self.roman_pixel_std, self.backbone_k.size_divisibility, 
+                                    self.backbone_k.padding_constraints)
+            # grab the features computed through the query encoder - don't need grads
+            # run moco with roman imgs as keys 
+            logits, labels = self.moco(features_q, images_k_roman.tensor)
+            moco_loss = self.moco_alpha * self.infoNCE_loss(logits, labels)
+        else:
+            # Validation mode: skip MoCo loss (no Roman data available)
+            moco_loss = None
+        
         # features from the rubin encoder are sent to detection heads, if they have labels
         if self.proposal_generator is not None:
             proposals, proposal_losses = self.proposal_generator(images_q_rubin, features_q, gt_instances)
@@ -250,35 +267,19 @@ class GeneralizedRCNNMultimodal(nn.Module):
             proposals = [x["proposals"].to(self.device) for x in batched_inputs]
             proposal_losses = {}
 
-        labeled_proposals, detector_losses = self.roi_heads(images_q_rubin, features_q, proposals, gt_instances)#, image_wcs)
+        _, detector_losses = self.roi_heads(images_q_rubin, features_q, proposals, gt_instances)#, image_wcs)
         # if self.vis_period > 0:
         #     storage = get_event_storage()
         #     if storage.iter % self.vis_period == 0:
         #         self.visualize_training(batched_inputs, proposals)
         
         losses = {}
+        # add MoCo loss only if computed (training w/ Roman data)
+        if moco_loss is not None:
+            losses.update({"infoNCE_loss": moco_loss})
+        # beta weight for supervised losses
         losses.update({k: self.beta * v for k, v in detector_losses.items()})
         losses.update({k: self.beta * v for k, v in proposal_losses.items()})
-        
-        # add InfoNCE loss only if computed (training w/ Roman data)
-        if has_roman_data:
-            images_k_roman = self.preprocess_image(batched_inputs, "image_roman", self.roman_pixel_mean, 
-                                    self.roman_pixel_std, self.backbone_k.size_divisibility, 
-                                    self.backbone_k.padding_constraints)
-
-            # grab the features computed through the query encoder
-            #np.save(f'/work/hdd/bdsp/yse2/lsst_runs/only_moco5_30k_rubin_test/images_rubin_{self.device}.npy',images_q_rubin.tensor.cpu().numpy())
-            #np.save(f'/work/hdd/bdsp/yse2/lsst_runs/only_moco5_30k_rubin_test/images_roman_{self.device}.npy',images_k_roman.tensor.cpu().numpy())
-            features_k = self.backbone_k(images_k_roman.tensor)
-            contrastive_loss = self.roi_heads.forward_contrastive(
-                features_q,
-                features_k,
-                labeled_proposals,
-                gt_instances
-            )
-
-            losses.update(contrastive_loss)
-                
         return losses
 
     def inference(
@@ -400,11 +401,8 @@ class FeatureMapMLP(nn.Module):
         #self.fcl_final = nn.Sequential(nn.Linear(hidden_dim,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,dim)),
 
         #take the features from the deepest feature map
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-
         self.fcls = nn.Sequential(
-            #nn.Linear(np.prod(shapes[-1]),hidden_dim),
-            nn.Linear(channel,hidden_dim),
+            nn.Linear(np.prod(shapes[-1]),hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim,hidden_dim),
             nn.ReLU(),
@@ -426,8 +424,256 @@ class FeatureMapMLP(nn.Module):
         #outputs = self.fcl_final(f_outs)
 
         #just use the final feature map
-        features = self.avgpool(features[self.f_keys[-1]])
-        features = torch.flatten(features, 1)
-        #features = nn.Flatten()(features[self.f_keys[-1]])
+        features = nn.Flatten()(features[self.f_keys[-1]])
         outputs = self.fcls(features)
         return outputs
+
+# two imgs --> embedding spaces over iters
+class MMMoCo(nn.Module):
+    """
+    Build a MoCo model with: a query encoder, a key encoder, and a queue
+    https://arxiv.org/abs/1911.05722.  
+    Uses multimodal images, so the query and key encoders will be slightly different
+    """
+    def __init__(self, encoder_q, encoder_k, outshape_q, outshape_k, hidden_dim, dim, K=8192, m=0.999, T=0.07):
+        """
+        dim: feature dimension (default: 128)
+        K: queue size; number of negative keys (default: 8192)
+        m: moco momentum of updating key encoder (default: 0.999)
+        T: softmax temperature (default: 0.07)
+        self.backbone_q, self.backbone_k, 
+                           outshape, sp, hidden_dim, dim=dim, K=K, m=m, T=T
+        """
+        super(MMMoCo, self).__init__()
+
+        self.K = K
+        self.m = m
+        self.T = T
+
+        # This assumes that the patch embedding has been fixed such that the feature maps of
+        # both encoders are the same size.
+
+        # Check that sizes of final feature map will match
+        sp_q = encoder_q._square_pad
+        sp_k = encoder_k._square_pad
+        ps_q = encoder_q.bottom_up.patch_embed.patch_size[0]
+        ps_k = encoder_k.bottom_up.patch_embed.patch_size[0]
+        pad_q = (ps_q - sp_q % ps_q) if sp_q % ps_q != 0 else 0
+        pad_k = (ps_k - sp_k % ps_k) if sp_k % ps_k != 0 else 0
+        size1 = (sp_q + pad_q -(ps_q - 1) -1)/ ps_q + 1
+        size2 = (sp_k + pad_k -(ps_k - 1) -1)/ ps_k + 1
+        assert size1==size2, "Sizes of the feature maps should match.  Check the patch embedding or square padding of the encoders"
+
+        self.mlp_q = FeatureMapMLP(outshape_q, sp_q, hidden_dim, dim)
+        self.mlp_k = FeatureMapMLP(outshape_k, sp_k, hidden_dim, dim)
+        
+        # add the mlp to the encoders to get the latent dim embeddings
+        self.encoder_q = nn.Sequential(encoder_q, self.mlp_q)
+        self.encoder_k = nn.Sequential(encoder_k, self.mlp_k)
+        for (name_q, param_q), (name_k, param_k) in zip(self.encoder_q.named_parameters(), self.encoder_k.named_parameters()):
+            # we need to exclude the patch embedding layer of the roman_key encoder from this
+            # because the images sent into the roman_key encoder will have different size/channels 
+            # (3 channels vs 6, 520x520 vs 160x160) means it can't copy from Rubin encoder since the dimensions won't match
+            if "bottom_up.patch_embed" in name_k:
+                continue
+            # print(f"Copying param {name_q} to {name_k} for momentum encoder initialization")
+            param_k.data.copy_(param_q.data)  # initialize (not really necessary if we use the same checkpoints)
+            param_k.requires_grad = False  # not updated by gradient since it's a momentum encoder
+
+        # create the queue
+        self.register_buffer("queue", torch.randn(dim, K))
+        self.queue = nn.functional.normalize(self.queue, dim=0)
+        self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
+        param_to_check = self.encoder_k[0].bottom_up.patch_embed.proj.weight
+        # Register a buffer to store its value from the previous step
+        # We use .data.clone() to get the values without grad history
+        self.register_buffer("old_patch_embed_weight", param_to_check.data.clone())
+
+    @torch.no_grad()
+    def _momentum_update_key_encoder(self):
+        """
+        Momentum update of the key encoder
+        """
+        for (name_q, param_q), (name_k, param_k) in zip(self.encoder_q.named_parameters(), self.encoder_k.named_parameters()):
+            # we need to exclude the patch embedding dimensions here as well
+            if "bottom_up.patch_embed" in name_k:
+                continue
+            param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
+
+    @torch.no_grad()
+    def _dequeue_and_enqueue(self, keys):
+        # gather keys before updating queue
+        keys = concat_all_gather(keys)
+        batch_size = keys.shape[0]
+        ptr = int(self.queue_ptr)
+        assert self.K % batch_size == 0  # for simplicity
+        # replace the keys at ptr (dequeue and enqueue)
+        self.queue[:, ptr:ptr + batch_size] = keys.T
+        ptr = (ptr + batch_size) % self.K  # move pointer
+        self.queue_ptr[0] = ptr
+
+    @torch.no_grad()
+    def _batch_shuffle_ddp(self, x):
+        """
+        Batch shuffle, for making use of BatchNorm.
+        *** Only support DistributedDataParallel (DDP) model. ***
+        """
+        # gather from all gpus
+        batch_size_this = x.shape[0]
+        x_gather = concat_all_gather(x)
+        batch_size_all = x_gather.shape[0]
+        num_gpus = batch_size_all // batch_size_this
+        # random shuffle index
+        idx_shuffle = torch.randperm(batch_size_all).cuda()
+        # broadcast to all gpus
+        torch.distributed.broadcast(idx_shuffle, src=0)
+        # index for restoring
+        idx_unshuffle = torch.argsort(idx_shuffle)
+        # shuffled index for this gpu
+        gpu_idx = torch.distributed.get_rank()
+        idx_this = idx_shuffle.view(num_gpus, -1)[gpu_idx]
+        return x_gather[idx_this], idx_unshuffle
+
+    @torch.no_grad()
+    def _batch_unshuffle_ddp(self, x, idx_unshuffle):
+        """
+        Undo batch shuffle.
+        *** Only support DistributedDataParallel (DDP) model. ***
+        """
+        # gather from all gpus
+        batch_size_this = x.shape[0]
+        x_gather = concat_all_gather(x)
+        batch_size_all = x_gather.shape[0]
+
+        num_gpus = batch_size_all // batch_size_this
+
+        # restored index for this gpu
+        gpu_idx = torch.distributed.get_rank()
+        idx_this = idx_unshuffle.view(num_gpus, -1)[gpu_idx]
+
+        return x_gather[idx_this]
+
+    def forward(self, features_q, im_k):
+        """
+        Take in query features instead of images.  Keep key images as input
+        so that we can make use of the shuffle batch norm
+        Input:
+            features_q: a batch of query features
+            im_k: a batch of key images
+        Output:
+            logits, targets
+        """
+        # Project the rubin_query features into the embedding space 
+        q = self.mlp_q(features_q)  # queries: NxC
+        q = nn.functional.normalize(q, dim=1)
+        # compute key features with no gradient
+        self._momentum_update_key_encoder()  # update the key encoder
+        
+        # We have to remove the key shuffling because it breaks the gradient
+        # we can enable now since no grad
+        # im_k, idx_unshuffle = self._batch_shuffle_ddp(im_k)
+
+        k = self.encoder_k(im_k)  # keys: NxC
+        k = nn.functional.normalize(k, dim=1)
+        
+        # undo shuffle
+        # with torch.no_grad():
+        #     k = self._batch_unshuffle_ddp(k, idx_unshuffle)
+        
+        # compute logits
+        # Einstein sum is more intuitive
+        # positive logits: Nx1
+        l_pos = torch.einsum('nc,nc->n', [q, k]).unsqueeze(-1) # here k has grads only thru the patch embedding
+        # negative logits: NxK
+        l_neg = torch.einsum('nc,ck->nk', [q, self.queue.clone().detach()])
+
+        # logits: Nx(1+K)
+        logits = torch.cat([l_pos, l_neg], dim=1)
+
+        # apply temperature
+        logits /= self.T
+
+        # labels: positive key indicators
+        labels = torch.zeros(logits.shape[0], dtype=torch.long).cuda()
+        # moco_loss has grad path: loss -> logits -> l_pos -> k -> patch_embed
+        # so in backward pass:
+        # grads flow back thru l_pos to k, then to encoder_k where only the patch embedding receives grads
+        # updating only the patch embedding of encoder_k with regular optimizer (AdamW) steps
+        # dequeue and enqueue
+        self._dequeue_and_enqueue(k.detach())
+        return logits, labels
+
+# utils
+@torch.no_grad()
+def concat_all_gather(tensor):
+    """
+    Performs all_gather operation on the provided tensors.
+    *** Warning ***: torch.distributed.all_gather has no gradient.
+    """
+    tensors_gather = [torch.ones_like(tensor)
+        for _ in range(torch.distributed.get_world_size())]
+    torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
+
+    output = torch.cat(tensors_gather, dim=0)
+
+    return output
+
+def return_frozen_model(cfg, freeze=True):
+    """Return a model formed from a LazyConfig with the backbone
+    frozen. Only the MLP/patch embedding layers will be trained.
+    
+    Currently, the key encoder isn't rly updating bc of param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
+    Parameters
+    ----------
+    cfg : .py file
+        a LazyConfig
+
+    Returns
+    -------
+        torch model
+    """
+    model = instantiate(cfg.model)
+    # freezing pre-trained swin body, only training input layers (patch_embed) and heads (mlp)
+    print("DEBUG: Executing Test 2 - Freezing Backbone, Training Patch Embeddings and MLPs Only")
+    for name, param in model.named_parameters():
+        # freeze everything first
+        param.requires_grad = False
+        # query backbone updated 
+        if "_q" in name:
+            print(f"  Gradient Training Enabled: {name}")
+        # Exception 1: The Input Layers (Patch Embeddings - Both Roman and Rubin need to learn adapters)
+        # We need these to learn how to map pixels to the pre-trained feature space
+        if "patch_embed" in name:
+            param.requires_grad = True
+            print(f"  Training Enabled: {name}")
+        # Exception 2: The MoCo Projection Heads (MLP)
+        # These need to learn the contrastive embedding space
+        # only train the query mlp since the key mlp is updated via momentum so let's keep it frozen
+        if "moco.mlp_q" in name:
+            param.requires_grad = True
+            print(f"  Training Enabled: {name}")
+
+    model.to(cfg.train.device)
+    model = create_ddp_model(model, **cfg.train.ddp)
+    return model
+
+def return_unfrozen_model(cfg, freeze=False):
+    """
+    Phase 2 Model:
+    - Rubin (Query): Fully Unfrozen (Backbone + Patch Embed + MLP) --> Trains with Gradients
+    - Roman (Key): Fully Frozen (Backbone + Patch Embed + MLP) --> Updates via Momentum
+    """
+    model = instantiate(cfg.model)
+    # print("DEBUG: Executing Phase 2 - Unfreezing Rubin, Keeping Roman Frozen")
+    for name, param in model.named_parameters():
+        # turn grads on for EVERYTHING
+        param.requires_grad = True
+        # Exception: Freeze the entire Roman Key Encoder making it updated via MOMENTUM
+        # The Key patch_embed is STATIC (no momentum, no gradients)
+        # if "_k" in name:
+        #     param.requires_grad = False
+        #     print(f"  Gradient Training Disabled: {name}")
+    
+    model.to(cfg.train.device)
+    model = create_ddp_model(model, **cfg.train.ddp)
+    return model
