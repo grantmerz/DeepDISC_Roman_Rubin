@@ -13,8 +13,7 @@ import math
 # we must also ensure that per gpu batch size is divisible by K used in meta_arch.py
 # K=8192 for 30k set and 8192/16 = 512 so we can set bs = 64
 # for stage 1 freeze, using same bs means only 50% GPU memory usage so in the future, we could change queue size K to get higher bs as 32/GPU runs out of memory
-bs = 16
-
+bs = 64
 # 4 H200 GPUS --> bs = 256 (64 per gpu) (Max GPU Util and ~87-95% GPU memory), test_bs = bs * 2 
 # K = 8192 for 30k and 8192/64 = 128 so we can set bs = 256
 # bs = 256
@@ -37,15 +36,12 @@ from ..custom.mappers import MoCoRubinMapper, MoCoEvalMapper
 import deepdisc.model.loaders as loaders
 
 from deepdisc.data_format.augment_image import dc2_train_augs
-from ..custom.meta_arch_test3 import GeneralizedRCNNMoco, DynamicSwinTransformer
-from ..custom.roiheads import ContrastiveCascadeROIHeads
+from ..custom.meta_arch import GeneralizedRCNNMoco, DynamicSwinTransformer
 
 # Overrides of the template COCO config
 # This is the cascade mask rcnn of an ImageNet-swin_base_patch4_window7_224_21k model
 # train.init_checkpoint = "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_moco_model.pkl"
 train.init_checkpoint = "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_moco_lsst_model.pkl"
-#train.init_checkpoint = None
-
 # change to the frozen swin checkpoint for stage 2 of training
 # train.init_checkpoint = "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_frozen_moco_model.pkl"
 
@@ -68,12 +64,6 @@ model.roi_heads.num_classes = numclasses
 model.roi_heads.batch_size_per_image = 512
 
 # use _target_ to only swap the class type but keeps existing args from parent config
-model.roi_heads._target_ = ContrastiveCascadeROIHeads
-model.roi_heads.contrastive_dim =128
-model.roi_heads.contrastive_hidden_dim= 1024
-model.roi_heads.contrastive_weight =1.0
-model.roi_heads.temperature=0.07
-#--------------------------------------------------------
 model.backbone.bottom_up._target_ = DynamicSwinTransformer 
 model._target_ = GeneralizedRCNNMoco
 model.backbone_q = model.backbone # query is Rubin
@@ -157,12 +147,9 @@ model.backbone_k.bottom_up.patch_size = 4 # math.ceil(max_key_img_size / query_f
 model.backbone_k.square_pad = model.backbone_q.square_pad # query_feature_size * model.backbone_k.bottom_up.patch_size  # 40*13 = 520
 
 # setting MoCo specific parameters
-#model.K = 8192  # queue size
-model.K = 1024  # queue size
-model.T = 0.05  # temperature
-
-model.beta = 1.0 # turning off supervised losses for testing
-model.moco_alpha = 0.05 # weight for MoCo loss
+model.K = 8192  # queue size
+model.beta = 0.0 # turning off supervised losses for testing
+# model.moco_alpha = 4.0 # weight for MoCo loss
 # setting both to 1.0 seems like the gradient updates are being dominated by the detection losses 
 
 # from rubin training data of 109,782 imgs
@@ -250,13 +237,11 @@ for box_predictor in model.roi_heads.box_predictors:
     
 # change this function depending on the metadata format
 # needs to return where the cutout image data for each cutout is stored
+def key_mapper(dataset_dict):
+    fn = dataset_dict["file_name"]
+    return fn
 
-def lsst_key_mapper(dataset_dict):
-    key = dataset_dict["file_name"]
-    k = key.replace("/u/","/work/hdd/bdsp/")
-    return k
-
-dataloader.key_mapper = lsst_key_mapper
+dataloader.key_mapper = key_mapper
 dataloader.train.mapper = MoCoRubinMapper
 dataloader.test.mapper = MoCoEvalMapper
 reader = DualRubinRubinImageReader()
