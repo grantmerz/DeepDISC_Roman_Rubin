@@ -332,9 +332,11 @@ class GeneralizedRCNNMultimodal(nn.Module):
 
             results, _ = self.roi_heads(imgs_rubin, features, proposals, None)#, image_wcs=image_wcs)
         else:
+            # we already have the detected boxes and classes, so we skip proposal generation and box head inference
+            # just run the box features through the mask/keypoint heads if they exist
             detected_instances = [x.to(self.device) for x in detected_instances]
+            # from detectron2/modeling/roi_heads/roi_heads.py, StandardROIHeads.forward_with_given_boxes
             results = self.roi_heads.forward_with_given_boxes(features, detected_instances)
-            # results = self.roi_heads._forward_redshift(features, results)#, image_wcs=image_wcs)
     
         if do_postprocess:
             assert not torch.jit.is_scripting(), "Scripting is not supported for postprocess."
