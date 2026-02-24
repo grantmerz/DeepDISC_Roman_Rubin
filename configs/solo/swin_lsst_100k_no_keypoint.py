@@ -88,10 +88,6 @@ model.pixel_std = [
     2.6324615478515625,
 ]
 
-
-
-
-
 model.proposal_generator.nms_thresh = 0.3
 for box_predictor in model.roi_heads.box_predictors:
     box_predictor.test_topk_per_image = 2000

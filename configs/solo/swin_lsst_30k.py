@@ -23,6 +23,10 @@ numclasses = len(metadata.classes)
 # Get values from templates
 from ..COCO.cascade_mask_rcnn_swin_b_in21k_50ep import dataloader, model, train, lr_multiplier, optimizer
 from ..custom.image_readers import RomanRubinImageReader
+from detectron2.layers import ShapeSpec
+from detectron2.modeling.poolers import ROIPooler
+from detectron2.modeling.roi_heads import KRCNNConvDeconvUpsampleHead
+from detectron2.config import LazyCall as L
 
 import deepdisc.model.loaders as loaders
 from deepdisc.data_format.augment_image import dc2_train_augs
@@ -37,6 +41,7 @@ train.timing_save_period = steps_per_epoch # save timing to disk every n iters (
 
 dataloader.augs = dc2_train_augs
 dataloader.train.total_batch_size = bs
+# dataloader.train.num_workers = 16
 # when bs=96, bs * 6 but when bs=144, bs * 6 crashed so using bs * 4 and for bs=192, bs * 2
 dataloader.test.total_batch_size = bs * 2 # higher since no gradients being calculated
 dataloader.test.num_workers = 16
@@ -44,6 +49,29 @@ dataloader.test.num_workers = 16
 model.proposal_generator.anchor_generator.sizes = [[8], [16], [32], [64], [128]]
 model.roi_heads.num_classes = numclasses
 model.roi_heads.batch_size_per_image = 512
+
+# Keypoint ROI head taken from the config in detectron2 repo 
+# detectron2/model_zoo/configs/common/models/keypoint_rcnn_fpn.py
+model.roi_heads.update(
+    keypoint_in_features=["p2", "p3", "p4", "p5"],
+    keypoint_pooler=L(ROIPooler)(
+        output_size=14,
+        scales=(1.0 / 4, 1.0 / 8, 1.0 / 16, 1.0 / 32),
+        sampling_ratio=0,
+        pooler_type="ROIAlignV2",
+    ),
+    keypoint_head=L(KRCNNConvDeconvUpsampleHead)(
+        input_shape=ShapeSpec(channels=256, width=14, height=14),
+        num_keypoints=1, # only 1 keypoint for the centroid of source
+        conv_dims=[512] * 8,
+        loss_normalizer="visible",
+    ),
+)
+
+# Keypoint AP degrades (though box AP improves) when using plain L1 loss
+# so setting smooth_l1_beta to 0.5 (default is 0 which is just L1 loss)
+for box_predictor in model.roi_heads.box_predictors:
+    box_predictor.smooth_l1_beta = 0.5
 
 """
 Since the in_features are ("p0", "p1", "p2", "p3"), 
@@ -58,7 +86,6 @@ Our max LSST size is 151x151 so we pad to 160x160 (32*5).
 You can theoretically set square_pad to whatever you want, but setting it to a value not divisible by size_divisibility 
 just results in extra padding being added to make it divisible anyway.
 """
-
 model.backbone.square_pad = 160
 # using gradient checkpointing to save memory
 # works by not storing intermediate activations for each layer, 
