@@ -32,8 +32,11 @@ nvidia-smi --query-gpu=gpu_name,gpu_bus_id,memory.total,memory.used --format=csv
 echo "Defining training parameters..."
 # locations of config and data files
 CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_lsst_30k.py"
-TRAIN_FILE="/u/yse2/lsst_data/annotations_lvl5/train_30k.json" 
-EVAL_FILE="/u/yse2/lsst_data/annotations_lvl5/val_4k.json"  
+# REPLACE WITH KEYPOINTS FILE 
+# Eventually we should just have train_30k.json to default have keypoints 
+# and not have to specify a separate file for keypoints
+TRAIN_FILE="/u/yse2/lsst_data/annotations_lvl5/train_30k_keypoints.json" 
+EVAL_FILE="/u/yse2/lsst_data/annotations_lvl5/val_4k_keypoints.json"  
 RUN_NAME="lsst5_30k_4h200_bs192_ep50"
 OUTPUT_DIR="./lsst_runs/${RUN_NAME}"
 
