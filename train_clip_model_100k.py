@@ -18,16 +18,15 @@ import time
 import sys
 # allows us to import from the custom configs directory w/o affecting deepdisc library imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'deepdisc/configs')))
-from custom.trainers import return_timed_lazy_trainer
-from custom.hooks import return_timed_evallossHook
-from custom.meta_arch import return_frozen_model
+from custom.trainers import return_timed_lazy_trainer, EarlyStoppingException
+from custom.hooks import return_timed_evallossHook, return_early_stoppingHook
 
 import detectron2.utils.comm as comm
 
 # import some common libraries
 import numpy as np
 import torch
-import torch.distributed as dist
+torch.multiprocessing.set_sharing_strategy('file_system') # necessary for 100k training so we don't get "too many files open" error with dataloader workers > 0
 
 # import some common detectron2 utilities
 from detectron2.config import LazyConfig
@@ -46,8 +45,7 @@ from deepdisc.training.trainers import (
     return_schedulerhook
 )
 from deepdisc.utils.parse_arguments import make_training_arg_parser
-import ssl
-ssl._create_default_https_context = ssl._create_unverified_context
+
 def main(args, freeze):
     # Hack if you get SSL certificate error
     import ssl
@@ -56,10 +54,13 @@ def main(args, freeze):
     # Handle args
     output_dir = args.output_dir
     run_name = args.run_name    
+
     # Get file locations
     trainfile = args.train_metadata
     evalfile = args.eval_metadata
+
     cfgfile = args.cfgfile
+    
     # Load the config
     cfg = LazyConfig.load(cfgfile)
     for key in cfg.get("MISC", dict()).keys():
@@ -77,55 +78,30 @@ def main(args, freeze):
     astroval_metadata = register_data_set(
         cfg.DATASETS.TEST, evalfile, thing_classes=cfg.metadata.classes
     )
+    
     # Set the output directory
     cfg.OUTPUT_DIR = output_dir
     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
     
-    # Iterations for 15, 25, 35, 50 epochs
-    # then freeze them and train the rest for 35 more epochs so that we can do pure MoCo
-    steps_per_epoch = 100 # for testing
-    # steps_per_epoch = cfg.dataloader.steps_per_epoch
-    
-    # train just the patchembedding layers, MoCo MLP layers for 15 epochs
-    # for training the heads only
-    efinal = steps_per_epoch * 10 # for testing
-    # efinal = steps_per_epoch * 15
-    
-    # for phase 2 of training
-    # e1 = steps_per_epoch * 25
-    # e2 = steps_per_epoch * 35
-    # efinal = steps_per_epoch * 50
-    
-    # for testing
-    # e1 = steps_per_epoch
-    # e2 = steps_per_epoch * 2
-    # efinal = e2
-    # model = return_lazy_model(cfg, freeze)
-    model = return_frozen_model(cfg, freeze)
-    
-    # for training
+    # Iterations for 5, 10, 15, 20 epochs
+    steps_per_epoch = cfg.dataloader.steps_per_epoch
+    e1 = steps_per_epoch * 5
+    e2 = steps_per_epoch * 10
+    e3 = steps_per_epoch * 15
+    efinal = steps_per_epoch * 20
+
+    val_per = steps_per_epoch
+    model = return_lazy_model(cfg, freeze)
     mapper = cfg.dataloader.train.mapper(
-        cfg.dataloader.train.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
+        cfg.dataloader.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
     ).map_data
     loader = return_train_loader(cfg, mapper)
-    
-    # for validation 
-    val_per = 200 # for testing
-    # val_per = steps_per_epoch
-    eval_mapper = cfg.dataloader.test.mapper(
-        cfg.dataloader.test.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
-    ).map_data
-    eval_loader = return_test_loader(cfg, eval_mapper)
-    
+    eval_loader = return_test_loader(cfg, mapper)
     cfg.optimizer.params.model = model
     # if freeze:
     # setting up epochs and learning rate for training all layers
-    # cfg.SOLVER.STEPS = [e1,e2,e3]
-    # cfg.SOLVER.STEPS = [e1] for testing
-    # cfg.SOLVER.STEPS = [e1, e2, e3]
-    # cfg.SOLVER.MAX_ITER = 1000  # for testing
-    
-    cfg.SOLVER.STEPS = [] # no LR drops when training just heads
+    cfg.SOLVER.STEPS = [e1,e2,e3]
+    # cfg.SOLVER.STEPS = [e1]
     cfg.SOLVER.MAX_ITER = efinal
     
     cfg.optimizer.lr = 0.001
@@ -134,33 +110,68 @@ def main(args, freeze):
     # choosing hooks for trainer
     saveHook = return_savehook(run_name, steps_per_epoch)
     schedulerHook = return_schedulerhook(optimizer)
-    # lossHook = return_timed_evallossHook(val_per, model, eval_loader)
+    # lossHook = return_evallosshook(5, model, eval_loader)
     lossHook = return_timed_evallossHook(val_per, model, eval_loader)
-    
+    # earlyStopHook = return_early_stoppingHook(
+    #     patience=steps_per_epoch * 2,  # an epoch w/o improvement
+    #     val_period=val_per,  # val period (every epoch)
+    #     min_iters=steps_per_epoch * 5,  # don't activate early stopping until after 5 epochs
+    #     save_best=True,  # save best model
+    #     output_name=f"{run_name}_best"
+    # )
+    # earlyStopHook = return_early_stoppingHook(
+    #     patience=2,  # an epoch w/o improvement
+    #     val_period=2,  # val period (every epoch)
+    #     min_delta=0.1,  # Loss must decrease by at least 0.1 to reset patience
+    #     min_iters=5,  # don't activate early stopping until after 5 epochs
+    #     save_best=True,  # save best model
+    #     output_name=f"{run_name}_best_TEST"
+    # )
     # hookList = [schedulerHook, saveHook]
     hookList = [lossHook, schedulerHook, saveHook]
+    # hookList = [lossHook, earlyStopHook, schedulerHook, saveHook]
+    
     trainer = return_timed_lazy_trainer(model, loader, optimizer, cfg, hookList)
-    # trainer.set_period(steps_per_epoch // 2)
-    # trainer.train(0, cfg.SOLVER.MAX_ITER)
-    # for testing
-    trainer.set_period(100)
-    # trainer.set_period(150)
-    trainer.train(0, 1000)
+    trainer.set_period(steps_per_epoch // 2)
+    trainer.train(0, cfg.SOLVER.MAX_ITER)
+    # trainer.set_period(5)
+    # now we need to wrap training in a try-except to catch early stopping
+    # early_stop = False
+    # try:
+    #     trainer.train(0, cfg.SOLVER.MAX_ITER)
+    #     # trainer.train(0, 10) # for testing
+    # except EarlyStoppingException as e:
+    #     early_stop = True
+    #     logger.info("****** EARLY STOPPING CAUGHT IN TRAINING SCRIPT ******")
+    #     logger.info(f"Exception message: {e}")
+    #     # synchonize processes after early stopping and before saving model
+    #     # prevents deadlocks where other processes are still waiting while main process enters the except block
+    #     comm.synchronize()             
+    #     if comm.is_main_process():
+    #         # save final model at iter where training stopped
+    #         final_iter = trainer.iter + 1
+    #         logger.info(f"Saving final model at iteration {final_iter}...")
+    #         trainer.checkpointer.save(f"{run_name}_iter{final_iter}")
+    #         logger.info(f"Final model saved as: {run_name}_iter{final_iter}.pth")
+    #     comm.synchronize()
     if comm.is_main_process():
         np.save(f"{output_dir}/{run_name}_losses", trainer.lossList)
         np.save(f"{output_dir}/{run_name}_val_losses", trainer.vallossList)
-        
-    # to avoid this warning:
-    # [rank0]:[W1212 09:05:12.615562415 ProcessGroupNCCL.cpp:1524] 
-    # Warning: WARNING: destroy_process_group() was not called before program exit, 
-    # which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
-    # make sure all processes are done before destroying the process group
-    comm.synchronize()
-    # destroy the default process group (on every rank)
-    if dist.is_available() and dist.is_initialized():
-        dist.destroy_process_group()
-
+    # if comm.is_main_process():
+    #     if early_stop:
+    #         logger.info(f"Training Status: STOPPED EARLY")
+    #         logger.info(f"Final iteration reached: {trainer.iter + 1} / {cfg.SOLVER.MAX_ITER}")
+    #     else:
+    #         logger.info(f"Training Status: COMPLETED FULLY")
+    #         logger.info(f"Total iterations: {cfg.SOLVER.MAX_ITER}")
+    #     np.save(f"{output_dir}/{run_name}_losses", trainer.lossList)
+    #     np.save(f"{output_dir}/{run_name}_val_losses", trainer.vallossList)
     return
+    # else:
+        
+    #     pass 
+        # train the backbone as well after training the head layers and the stem layer
+        # lower learning rate 0.0001 as we do not decay learning rate for retraining
 
 if __name__ == "__main__":
     args = make_training_arg_parser().parse_args()
