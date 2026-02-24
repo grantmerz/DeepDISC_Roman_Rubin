@@ -200,7 +200,7 @@ class ContrastiveCascadeROIHeads(CascadeROIHeads):
         # Compute pairwise cosine similarity matrix scaled by the learnable
         # temperature: logits[i, j] = sim(z_q_i, z_k_j) / T
         # Shape: (N, N); diagonal entries are pos pairs
-        logits = (z_q @ z_k.T) * self.logit_scale
+        logits = (z_q @ z_k.T) * self.logit_scale.exp()
         # GT labels: row i should be most similar to col i
         labels = torch.arange(len(z_q), device=z_q.device)
         
@@ -211,7 +211,13 @@ class ContrastiveCascadeROIHeads(CascadeROIHeads):
         # avg to get final loss
         loss = 0.5 * (loss_qk + loss_kq)
 
-        return {"roi_contrastive_loss": loss * self.contrastive_weight}
+        return {
+            "roi_contrastive_loss": loss * self.contrastive_weight,
+            # track effective temp (1/T = exp(logit_scale)) for monitoring
+            # A rapidly growing value might mean contrastive collapse
+            # Detached so it doesn't get used in the backward pass
+            "logit_scale": self.logit_scale.exp().detach(),
+        }
 
     def forward(self, images, features_q, proposals, targets=None):
         """ 

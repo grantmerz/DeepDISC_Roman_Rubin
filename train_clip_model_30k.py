@@ -12,6 +12,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # Setup detectron2 logger
 from detectron2.utils.logger import setup_logger
 
+import json
 import gc
 import os
 import time
@@ -161,8 +162,12 @@ def main(args, freeze):
     #         logger.info(f"Final model saved as: {run_name}_iter{final_iter}.pth")
     #     comm.synchronize()
     if comm.is_main_process():
-        np.save(f"{output_dir}/{run_name}_losses", trainer.lossList)
-        np.save(f"{output_dir}/{run_name}_val_losses", trainer.vallossList)
+        # np.save(f"{output_dir}/{run_name}_losses", trainer.lossList)
+        # np.save(f"{output_dir}/{run_name}_val_losses", trainer.vallossList)
+        with open(os.path.join(output_dir,run_name) + "_losses.json", 'w') as json_file:
+            json.dump(trainer.lossdict_epochs, json_file)
+        with open(os.path.join(output_dir,run_name) + "_val_losses.json", 'w') as json_file:
+            json.dump(trainer.vallossdict_epochs, json_file)
     # if comm.is_main_process():
     #     if early_stop:
     #         logger.info(f"Training Status: STOPPED EARLY")
