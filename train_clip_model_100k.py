@@ -94,10 +94,14 @@ def main(args, freeze):
     val_per = steps_per_epoch
     model = return_lazy_model(cfg, freeze)
     mapper = cfg.dataloader.train.mapper(
-        cfg.dataloader.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
+        cfg.dataloader.train.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
     ).map_data
     loader = return_train_loader(cfg, mapper)
-    eval_loader = return_test_loader(cfg, mapper)
+    
+    eval_mapper = cfg.dataloader.test.mapper(
+        cfg.dataloader.test.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
+    ).map_data
+    eval_loader = return_test_loader(cfg, eval_mapper)
     cfg.optimizer.params.model = model
     # if freeze:
     # setting up epochs and learning rate for training all layers

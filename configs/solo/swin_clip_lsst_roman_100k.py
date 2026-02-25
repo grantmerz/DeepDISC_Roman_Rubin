@@ -217,11 +217,12 @@ def key_mapper(dataset_dict):
     return fn
 
 dataloader.key_mapper = key_mapper
-dataloader.test.mapper = CLIPMapper(keypoint_hflip_indices=[0])
-dataloader.train.mapper = CLIPEvalMapper(keypoint_hflip_indices=[0])
+dataloader.train.mapper = CLIPMapper(keypoint_hflip_indices=[0])
 reader = DualRomanRubinImageReader()
-eval_reader = RomanRubinImageReader()
 dataloader.train.imagereader = reader
+
+dataloader.test.mapper = CLIPEvalMapper(keypoint_hflip_indices=[0]) 
+eval_reader = RomanRubinImageReader()
 dataloader.test.imagereader = eval_reader
 dataloader.steps_per_epoch = steps_per_epoch
 # ---------------------------------------------------------------------------- #
