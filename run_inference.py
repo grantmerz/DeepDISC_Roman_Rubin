@@ -15,14 +15,13 @@ import glob
 import random
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 import pandas as pd
 # allows us to import from the custom configs directory w/o affecting deepdisc library imports
 sys.path.insert(0, '/u/yse2/deepdisc/configs')
 # Astropy imports
 from astropy.wcs import WCS
 
+from tqdm import tqdm
 # Detectron2 setup
 import detectron2.utils.comm as comm
 from detectron2.utils.logger import setup_logger
@@ -34,18 +33,20 @@ from detectron2.engine.defaults import create_ddp_model
 from detectron2.checkpoint import DetectionCheckpointer
 
 # DeepDisc imports
-from custom.image_readers import RomanRubinImageReader
-from custom.mappers import FileNameMapper, FileNameWCSMapper
+from custom.mappers import FileNameMapper, FileNameWCSMapper, CLIPTestMapper
 from deepdisc.data_format.register_data import register_data_set
 from deepdisc.model.loaders import return_test_loader
 
-# Matplotlib and other libraries
-from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
-import matplotlib.font_manager as fm
-from tqdm import tqdm
+# Mapper registry: add new model types here
+MAPPER_REGISTRY = {
+    "standard_30k": FileNameWCSMapper,
+    "standard_all": FileNameWCSMapper,
+    "clip_30k": CLIPTestMapper,
+    "clip_all": CLIPTestMapper,
+}
 
-def inference(num_gpus, cfg_file, run_name, 
-              test_data_fn, topk_per_img, threshold_combos):
+def inference(num_gpus, cfg_file, run_name,
+              test_data_fn, topk_per_img, threshold_combos, model_type):
     """
     Main inference function to be launched on each GPU.
     Will be called by detectron2.engine.launch() for each GPU process.
@@ -56,16 +57,14 @@ def inference(num_gpus, cfg_file, run_name,
         test_data_fn: Path to the test data file
         topk_per_img: Number of top detections to keep per image
         threshold_combos: List of (score_thresh, nms_thresh) tuples to test
+        model_type: One of "standard_{30k|all}" or "clip_{30k|all}" — selects the test DataLoader mapper
     """
     logger = setup_logger()
     try:
         logger.info(f"Process started on GPU rank {comm.get_local_rank()}/{comm.get_world_size()}")
         base_run_dir = os.path.expanduser('~/lsst_runs/')
-        # run_name = 'lsst5_30k_4h200_bs192_ep50'
-        # run_name = 'lsst5_all_4h200_bs192_ep20'
         run_dir = f'{base_run_dir}{run_name}'
         cfg_file = os.path.expanduser(cfg_file)
-        # cfg_file = os.path.expanduser("~/deepdisc/configs/solo/swin_lsst_job_all.py")
 
         model_path = f'{run_dir}/{run_name}.pth'
         if comm.is_main_process():
@@ -74,6 +73,7 @@ def inference(num_gpus, cfg_file, run_name,
             logger.info("-"*45)
             logger.info(f"Number of GPUs: {num_gpus}")
             logger.info(f"World size: {comm.get_world_size()}")
+            logger.info(f"Model type: {model_type}")
             logger.info(f"Running with parameters:")
             logger.info(f"  Test Data File: {test_data_fn}")
             logger.info(f"  Run Directory: {run_dir}")
@@ -83,14 +83,14 @@ def inference(num_gpus, cfg_file, run_name,
             logger.info(f"  topk_per_img: {topk_per_img}")
             logger.info(f"  Total threshold combinations: {len(threshold_combos)}")
             for idx, (s, n) in enumerate(threshold_combos, 1):
-                logger.info(f"    {idx}. score={s}, nms={n}")       
-        
-        cfg = LazyConfig.load(f"{cfg_file}") 
+                logger.info(f"    {idx}. score={s}, nms={n}")
+
+        cfg = LazyConfig.load(f"{cfg_file}")
         for key in cfg.get("MISC", dict()).keys():
             cfg[key] = cfg.MISC[key]
         cfg.DATASETS.TEST = "test"
-        cfg.dataloader.augs = None # no augs for test set since we want preds on OG images
-        cfg.dataloader.test.mapper = FileNameWCSMapper # setting test DataLoader's mapper so that filename gets added to each sample
+        cfg.dataloader.augs = None  # no augs for test set since we want preds on OG images
+        cfg.dataloader.test.mapper = MAPPER_REGISTRY[model_type]
         # model params
         cfg.train.init_checkpoint = model_path
         # register test dataset on ALL processes b/c each GPU needs access to the dataset
@@ -105,23 +105,25 @@ def inference(num_gpus, cfg_file, run_name,
             (0, 255, 0),    # green for galaxies
             (0, 0, 255),    # blue for stars
         ]
+        # need this becasue the test Dataloader works on registered datasets, 
+        # so we have to register the test dataset even if there's no visualization
         astrotest_metadata = register_data_set(
             cfg.DATASETS.TEST, test_data_fn, thing_classes=cfg.metadata.classes, thing_colors=custom_colors
         )
         # synch all processes after dataset registration
         comm.synchronize()
         # adjust based on num GPUs and GPU memory
-        # for H200, 
+        # for H200,
         # for A40, can do bs=8 per GPU w/ 16 workers
         # since no grads, can do higher test batch size compared to train batch size
         # additionally, we'll need to set total batch size to be divisible by num_gpus
         # so that each GPU gets an equal share of the test set
         train_bs = cfg.dataloader.train.total_batch_size
         test_total_bs = 32 * 3 * num_gpus
-        cfg.dataloader.test.total_batch_size = test_total_bs // num_gpus # higher since no grads
+        cfg.dataloader.test.total_batch_size = test_total_bs // num_gpus  # higher since no grads
         # https://discuss.pytorch.org/t/dataloader-persistent-workers-usage/189329/3
-        cfg.dataloader.test.persistent_workers = True # keep workers alive b/w threshold combos
-        cfg.dataloader.test.num_workers = 8 # 16 crashed for bs=96 w/ 4x A100x8
+        cfg.dataloader.test.persistent_workers = True  # keep workers alive b/w threshold combos
+        cfg.dataloader.test.num_workers = 8  # 16 crashed for bs=96 w/ 4x A100x8
         if comm.is_main_process():
             logger.info(f"Training Batch Size: {train_bs}")
             logger.info(f"Test Batch size across all GPUs: {test_total_bs}")
@@ -139,9 +141,9 @@ def inference(num_gpus, cfg_file, run_name,
             logger.info("Creating model...")
         model = instantiate(cfg.model)
         model.to(cfg.train.device)
-        
+
         # wraps model in DistributedDataParallel if world_size > 1 so that each GPU will have its own copy of the model
-        model = create_ddp_model(model) 
+        model = create_ddp_model(model)
         if comm.is_main_process():
             logger.info(f"Model wrapped in DDP: {isinstance(model, torch.nn.parallel.DistributedDataParallel)}")
             logger.info(f"Loading checkpoint from: {cfg.train.init_checkpoint}")
@@ -164,7 +166,7 @@ def inference(num_gpus, cfg_file, run_name,
                 box_pred.test_topk_per_image = topk_per_img
                 box_pred.test_score_thresh = test_score_thresh
                 box_pred.test_nms_thresh = nms_thresh
-        
+
             batch_inference_times = []
             batch_sizes = []
             per_img_inference_times = []
@@ -177,24 +179,24 @@ def inference(num_gpus, cfg_file, run_name,
             total_num_dets = 0
             total = len(test_loader)
             prev_time = time.perf_counter()  # track time for data loading
-        
+
             if comm.is_main_process():
                 logger.info("-"*45)
                 logger.info("Starting inference...")
                 logger.info("-"*45)
                 logger.info(f"Total batches per GPU: {total}")
                 logger.info(f"Total batches across all GPUs: {total * num_gpus}")
-        
+
             start_time = time.perf_counter()
             with torch.no_grad():
                 for idx, batch in enumerate(test_loader):
                     batch_start = time.perf_counter()
                     batch_size = len(batch)
                     batch_sizes.append(batch_size)
-                    
+
                     # data loading time is time since last batch ended
                     data_load_time = batch_start - prev_time
-                    
+
                     infer_start = time.perf_counter()
                     # ensure that all CUDA ops are done before starting timing
                     if torch.cuda.is_available():
@@ -211,26 +213,26 @@ def inference(num_gpus, cfg_file, run_name,
                     pred_dicts.extend(metrics_dict)
                     total_dets = sum(len(result['instances']) for result in metrics_dict)
                     total_num_dets += total_dets
-                    
+
                     # calculate per-image times
                     per_img_infer = infer_time / batch_size
                     per_img_data = data_load_time / batch_size
                     batch_total_time = time.perf_counter() - batch_start
                     per_img_total = batch_total_time / batch_size
-                    
+
                     per_img_inference_times.append(per_img_infer)
                     per_img_data_times.append(per_img_data)
                     per_img_total_times.append(per_img_total)
-                    
+
                     # calculate rolling averages (last 10 batches)
                     window_size = 10
                     start_idx = max(0, len(per_img_inference_times) - window_size)
                     rolling_avg_infer = np.mean(per_img_inference_times[start_idx:])
                     rolling_avg_data = np.mean(per_img_data_times[start_idx:])
                     rolling_avg_total = np.mean(per_img_total_times[start_idx:])
-                    
+
                     prev_time = time.perf_counter()
-                    
+
                     # Log progress every 25%
                     log_interval = max(total // 4, 1)
                     if (idx + 1) % log_interval == 0 or (idx + 1) == total:
@@ -250,14 +252,14 @@ def inference(num_gpus, cfg_file, run_name,
                                 f"Infer={rolling_avg_infer*1000:.1f}ms/img, Data={rolling_avg_data*1000:.1f}ms/img, Total={rolling_avg_total*1000:.1f}ms/img | "
                                 f"ETA: {eta:.1f}s"
                             )
-        
+
             # sync before gathering results
             comm.synchronize()
             total_time = time.perf_counter() - start_time
             avg_infer_time = np.mean(batch_inference_times)
             total_infer_time = np.sum(batch_inference_times)
             data_time = total_time - total_infer_time
-        
+
             # let's first move instances to CPU and extract only needed data to avoid GPU OOM during gather
             pred_instances = [d['instances'].to('cpu') for d in pred_dicts]
             # for d in pred_dicts:
@@ -270,7 +272,7 @@ def inference(num_gpus, cfg_file, run_name,
             #         'pred_masks': instances.pred_masks.numpy(),
             #     }
             #     pred_dicts_cpu.append(pred_dict_cpu)
-            
+
             # results from all GPUs to main process
             if comm.is_main_process():
                 logger.info("-"*45)
@@ -286,7 +288,7 @@ def inference(num_gpus, cfg_file, run_name,
             del pred_dicts, pred_instances
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        
+
             if comm.is_main_process():
                 # flatten lists
                 all_preds = [item for sublist in gathered_pred_dicts for item in sublist]
@@ -300,7 +302,7 @@ def inference(num_gpus, cfg_file, run_name,
                 avg_per_img_infer = np.mean(per_img_inference_times)
                 avg_per_img_data = np.mean(per_img_data_times)
                 avg_per_img_total = np.mean(per_img_total_times)
-                
+
                 logger.info(f"Total time for {total} batches ({total_images_per_gpu} imgs) per GPU: {total_time:.2f}s")
                 logger.info(f"  Average inference time per batch: {avg_infer_time:.2f}s")
                 logger.info(f"  Total inference time: {total_infer_time:.2f}s")
@@ -317,7 +319,7 @@ def inference(num_gpus, cfg_file, run_name,
                     logger.info(f"  GPU {gpu_id}: {count} detections")
                 logger.info(f"  Total: {sum(all_det_counts)} detections")
                 logger.info("-"*45)
-                
+
                 det_ras = []
                 det_decs = []
                 det_filenames = []
@@ -335,7 +337,7 @@ def inference(num_gpus, cfg_file, run_name,
                     pred_scores = raw_instances.scores.numpy()
                     pred_classes = raw_instances.pred_classes.numpy()
                     pred_masks = raw_instances.pred_masks.numpy()
-                    
+
                     rle_masks = []
                     for mask in pred_masks:
                         # pycocotools expects a Fortran-contiguous array of type uint8
@@ -359,7 +361,7 @@ def inference(num_gpus, cfg_file, run_name,
                     'id': np.arange(len(det_ras)).tolist(),
                     'ra': det_ras,
                     'dec': det_decs,
-                    'class': det_classes, # galaxy=0, star=1
+                    'class': det_classes,  # galaxy=0, star=1
                     'file_name': det_filenames,
                     'bbox': det_boxes,
                     'score': det_scores,
@@ -371,10 +373,10 @@ def inference(num_gpus, cfg_file, run_name,
                 # pd.DataFrame(dd_det_cat).to_json(output_file)
                 logger.info(f"Detection catalog saved to: {output_file}.")
                 logger.info(f"Completed combination {combo_idx}/{len(threshold_combos)}")
-                
+
             # sync all processes before moving to next combination
             comm.synchronize()
-            
+
         return "Successfully completed inference for all threshold combinations."
     except Exception as e:
         logger.error(f"ERROR on GPU rank {comm.get_local_rank()}: {str(e)}")
@@ -382,16 +384,43 @@ def inference(num_gpus, cfg_file, run_name,
         raise
 
 if __name__ == "__main__":
-    # config params (os.path.expanduser expands the ~ in our path)    
+    # config params (os.path.expanduser expands the ~ in our path)
     data_root_dir = os.path.expanduser('~/lsst_data/')
     anns_folder = 'annotations_lvl5'
+
+    # Per-model-type defaults (used when --cfgfile / --run_name / --test_data_fn are not supplied)
+    MODEL_DEFAULTS = {
+        "standard_30k": {
+            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_lsst_30k.py",
+            "run_name":     "lsst5_30k_4h200_bs192_ep50",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
+        },
+        "standard_all": {
+            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_lsst_100k.py",
+            "run_name":     "lsst5_all_4h200_bs192_ep50",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
+        },
+        "clip_30k": {
+            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py",
+            "run_name":     "clip5_30k_4h200_bs32_ep50",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
+        },
+        "clip_all": {
+            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_100k.py",
+            "run_name":     "clip5_all_4h200_bs32_ep50",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
+        },
+    }
+
     parser = argparse.ArgumentParser(description='Run inference with multiple threshold combinations')
-    parser.add_argument('--cfgfile', type=str, default='~/deepdisc/configs/solo/swin_lsst_job.py',
-                        help='Path to the config file')
-    parser.add_argument('--run_name', type=str, default='lsst5_30k_4h200_bs192_ep50',
-                        help='Name of the run directory')
-    parser.add_argument('--test_data_fn', type=str, default=f'{data_root_dir}{anns_folder}/test_8k.json',
-                        help='Path to the test data file')
+    parser.add_argument('--model_type', type=str, default='standard_30k', choices=list(MAPPER_REGISTRY.keys()),
+                        help='Model type determining which mapper to use: "standard_{30k|all}" (FileNameWCSMapper) or "clip_{30k|all}" (CLIPTestMapper)')
+    parser.add_argument('--cfgfile', type=str, default=None,
+                        help='Path to the config file (defaults depend on --model_type)')
+    parser.add_argument('--run_name', type=str, default=None,
+                        help='Name of the run directory (defaults depend on --model_type)')
+    parser.add_argument('--test_data_fn', type=str, default=None,
+                        help='Path to the test data file (defaults depend on --model_type)')
     parser.add_argument('--topk_per_img', type=int, default=2000,
                         help='Number of top detections to keep per image')
     # confidence score of detections
@@ -415,13 +444,24 @@ if __name__ == "__main__":
     parser.add_argument('--num_gpus', type=int, default=4,
                         help='Number of GPUs to use')
     args = parser.parse_args()
+
+    # Fill in model-type-specific defaults for unspecified arguments
+    defaults = MODEL_DEFAULTS[args.model_type]
+    if args.cfgfile is None:
+        args.cfgfile = defaults["cfgfile"]
+    if args.run_name is None:
+        args.run_name = defaults["run_name"]
+    if args.test_data_fn is None:
+        args.test_data_fn = defaults["test_data_fn"]
+
     # https://docs.pytorch.org/docs/stable/multiprocessing.html#sharing-strategies
     # 'file_system' strategy uses file names given to shm_open to identify the shared memory region
     # and avoids caching the file descriptors obtained from it meaning we can have more workers
-    torch.multiprocessing.set_sharing_strategy('file_system') # allows for num_workers=16 on test DataLoader
+    torch.multiprocessing.set_sharing_strategy('file_system')  # allows for num_workers=16 on test DataLoader
     threshold_combos = list(itertools.product(args.score_thresholds, args.nms_thresholds))
     print("-"*45)
     print(f"Starting inference with {args.num_gpus} GPUs...")
+    print(f"Model type: {args.model_type}")
     print(f"Score thresholds: {args.score_thresholds}")
     print(f"NMS thresholds: {args.nms_thresholds}")
     print(f"Total threshold combinations to run: {len(threshold_combos)}")
@@ -435,8 +475,8 @@ if __name__ == "__main__":
         num_machines=1,
         machine_rank=0,
         dist_url=default_dist_url,
-        args=(args.num_gpus, args.cfgfile, args.run_name, 
-              args.test_data_fn, args.topk_per_img, threshold_combos),
+        args=(args.num_gpus, args.cfgfile, args.run_name,
+              args.test_data_fn, args.topk_per_img, threshold_combos, args.model_type),
     )
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -445,6 +485,11 @@ if __name__ == "__main__":
     print(f"Completed inference with all {len(threshold_combos)} combinations successfully!")
     print("="*60)
 
-# python preprocess_eval_data_gpu.py \ 
-# 	--score_thresholds 0.2 0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75 0.8 0.85 0.9 \ 
-# 	--nms_thresholds 0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75
+# Standard model 30k:
+#   python run_inference.py --model_type standard_30k \
+#       --score_thresholds 0.2 0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75 0.8 0.85 0.9 \ 
+#       --nms_thresholds 0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75
+# CLIP model 30k:
+#   python run_inference.py --model_type clip_30k \
+#       --score_thresholds 0.2 0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75 0.8 0.85 0.9 \ 
+#       --nms_thresholds 0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75
