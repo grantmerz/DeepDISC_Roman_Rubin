@@ -130,8 +130,14 @@ def inference(num_gpus, cfg_file, run_name,
             logger.info(f"Training Batch Size: {train_bs}")
             logger.info(f"Test Batch size across all GPUs: {test_total_bs}")
             logger.info(f"Test Batch size per GPU: {cfg.dataloader.test.total_batch_size}")
+        
+        if "clip" in model_type:
+            imagereader = cfg.dataloader.test.imagereader
+        else:
+            imagereader = cfg.dataloader.imagereader
+            
         mapper = cfg.dataloader.test.mapper(
-            cfg.dataloader.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
+            imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
         ).map_data
         test_loader = return_test_loader(cfg, mapper)
         if torch.cuda.is_available():
@@ -361,8 +367,10 @@ def inference(num_gpus, cfg_file, run_name,
                 assert len(det_ras) == len(det_decs) == len(det_filenames) == len(det_boxes) == len(det_scores) == len(det_classes) == len(det_rle_masks), "Mismatch in lengths of det catalog fields!"
                 dd_det_cat = {
                     'id': np.arange(len(det_ras)).tolist(),
-                    'ra': det_ras,
-                    'dec': det_decs,
+                    'ra_box': det_ras,
+                    'dec_box': det_decs,
+                    'ra_kp': ,
+                    'dec_kp': ,
                     'class': det_classes,  # galaxy=0, star=1
                     'file_name': det_filenames,
                     'bbox': det_boxes,
