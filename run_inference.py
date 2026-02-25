@@ -330,6 +330,8 @@ def inference(num_gpus, cfg_file, run_name,
 
                 det_ras = []
                 det_decs = []
+                det_ra_kps = []
+                det_dec_kps = []
                 det_filenames = []
                 det_boxes = []
                 det_scores = []
@@ -337,15 +339,27 @@ def inference(num_gpus, cfg_file, run_name,
                 det_rle_masks = []
                 # now we save all the detections to a detection catalog
                 for raw_instances, wcs, fn in zip(all_preds, all_wcs, all_fns):
+                    w = WCS(wcs)
                     centers_pred = raw_instances.pred_boxes.get_centers().numpy()
-                    det_coords = WCS(wcs).pixel_to_world(centers_pred[:,0],centers_pred[:,1])
+                    det_coords = w.pixel_to_world(centers_pred[:,0],centers_pred[:,1])
                     det_ras.extend(det_coords.ra.degree)
-                    det_decs.extend(det_coords.dec.degree)
+                    det_decs.extend(det_coords.dec.degree)                    
+                    if raw_instances.has("pred_keypoints"):
+                        kps = raw_instances.pred_keypoints.numpy()
+                        # kps shape is (N, 1, 3) where 3 is (x, y, score)
+                        kp_x = kps[:, 0, 0]
+                        kp_y = kps[:, 0, 1]
+                        kp_coords = w.pixel_to_world(kp_x, kp_y)
+                        det_ra_kps.extend(kp_coords.ra.degree)
+                        det_dec_kps.extend(kp_coords.dec.degree)
+                    else:
+                        # if keypoints aren't predicted
+                        det_ra_kps.extend([None] * len(raw_instances))
+                        det_dec_kps.extend([None] * len(raw_instances))
                     pred_boxes = raw_instances.pred_boxes.tensor.numpy()
                     pred_scores = raw_instances.scores.numpy()
                     pred_classes = raw_instances.pred_classes.numpy()
                     pred_masks = raw_instances.pred_masks.numpy()
-
                     rle_masks = []
                     for mask in pred_masks:
                         # pycocotools expects a Fortran-contiguous array of type uint8
@@ -363,14 +377,14 @@ def inference(num_gpus, cfg_file, run_name,
                     det_scores.extend(pred_scores.tolist())
                     det_classes.extend(pred_classes.tolist())
                     det_rle_masks.extend(rle_masks)
-                logger.info(f"Lengths of det catalog fields: {len(det_ras)}, {len(det_decs)}, {len(det_filenames)}, {len(det_boxes)}, {len(det_scores)}, {len(det_classes)}, {len(det_rle_masks)}")
-                assert len(det_ras) == len(det_decs) == len(det_filenames) == len(det_boxes) == len(det_scores) == len(det_classes) == len(det_rle_masks), "Mismatch in lengths of det catalog fields!"
+                logger.info(f"Lengths of det catalog fields: {len(det_ras)}, {len(det_decs)}, {len(det_ra_kps)}, {len(det_dec_kps)}, {len(det_filenames)}, {len(det_boxes)}, {len(det_scores)}, {len(det_classes)}, {len(det_rle_masks)}")
+                assert len(det_ras) == len(det_decs) == len(det_ra_kps) == len(det_dec_kps) == len(det_filenames) == len(det_boxes) == len(det_scores) == len(det_classes) == len(det_rle_masks), "Mismatch in lengths of det catalog fields!"
                 dd_det_cat = {
                     'id': np.arange(len(det_ras)).tolist(),
                     'ra_box': det_ras,
                     'dec_box': det_decs,
-                    'ra_kp': ,
-                    'dec_kp': ,
+                    'ra_kp': det_ra_kps,
+                    'dec_kp': det_dec_kps,
                     'class': det_classes,  # galaxy=0, star=1
                     'file_name': det_filenames,
                     'bbox': det_boxes,
