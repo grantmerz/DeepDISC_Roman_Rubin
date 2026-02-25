@@ -88,7 +88,7 @@ class CLIPMapper(DataMapper):
     Data mapper for CLIP training with Roman-LSST pairs.
     Handles both labeled and unlabeled data.
     """
-    def __init__(self, keypoint_hflip_indices=None, *args, **kwargs):
+    def __init__(self, *args, keypoint_hflip_indices=None, **kwargs):
         self.keypoint_hflip_indices = keypoint_hflip_indices
         super().__init__(*args, **kwargs)
     
@@ -167,7 +167,7 @@ class CLIPEvalMapper(DataMapper):
     training-mode forward pass can compute validation losses.
     """
     
-    def __init__(self, keypoint_hflip_indices=None, *args, **kwargs):
+    def __init__(self, *args, keypoint_hflip_indices=None, **kwargs):
         self.keypoint_hflip_indices = keypoint_hflip_indices
         super().__init__(*args, **kwargs)
     
