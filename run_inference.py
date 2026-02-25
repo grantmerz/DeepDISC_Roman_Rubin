@@ -46,7 +46,7 @@ MAPPER_REGISTRY = {
 }
 
 def inference(num_gpus, cfg_file, run_name,
-              test_data_fn, topk_per_img, threshold_combos, model_type):
+              test_data_fn, topk_per_img, threshold_combos, model_type, data_split):
     """
     Main inference function to be launched on each GPU.
     Will be called by detectron2.engine.launch() for each GPU process.
@@ -58,6 +58,7 @@ def inference(num_gpus, cfg_file, run_name,
         topk_per_img: Number of top detections to keep per image
         threshold_combos: List of (score_thresh, nms_thresh) tuples to test
         model_type: One of "standard_{30k|all}" or "clip_{30k|all}" — selects the test DataLoader mapper
+        data_split: Which data split to use: 'eval' or 'test'
     """
     logger = setup_logger()
     try:
@@ -74,6 +75,7 @@ def inference(num_gpus, cfg_file, run_name,
             logger.info(f"Number of GPUs: {num_gpus}")
             logger.info(f"World size: {comm.get_world_size()}")
             logger.info(f"Model type: {model_type}")
+            logger.info(f"Data split: {data_split}")
             logger.info(f"Running with parameters:")
             logger.info(f"  Test Data File: {test_data_fn}")
             logger.info(f"  Run Directory: {run_dir}")
@@ -367,7 +369,9 @@ def inference(num_gpus, cfg_file, run_name,
                     'score': det_scores,
                     'rle_masks': det_rle_masks
                 }
-                output_file = f'{run_dir}/preds/pred_s{test_score_thresh}_n{nms_thresh}.json'
+                output_dir = f'{run_dir}/preds/{data_split}'
+                os.makedirs(output_dir, exist_ok=True)
+                output_file = f'{output_dir}/pred_s{test_score_thresh}_n{nms_thresh}.json'
                 with open(output_file, 'w') as f:
                     json.dump(dd_det_cat, f, indent=2)
                 # pd.DataFrame(dd_det_cat).to_json(output_file)
@@ -393,28 +397,34 @@ if __name__ == "__main__":
         "standard_30k": {
             "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_lsst_30k.py",
             "run_name":     "lsst5_30k_4h200_bs192_ep50",
-            "test_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
+            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
         },
         "standard_all": {
             "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_lsst_100k.py",
             "run_name":     "lsst5_all_4h200_bs192_ep50",
-            "test_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
+            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/test_keypoints.json",
         },
         "clip_30k": {
             "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py",
             "run_name":     "clip5_30k_4h200_bs32_ep50",
-            "test_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
+            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
         },
         "clip_all": {
             "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_100k.py",
             "run_name":     "clip5_all_4h200_bs32_ep50",
-            "test_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
+            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/test_keypoints.json",
         },
     }
 
     parser = argparse.ArgumentParser(description='Run inference with multiple threshold combinations')
     parser.add_argument('--model_type', type=str, default='standard_30k', choices=list(MAPPER_REGISTRY.keys()),
                         help='Model type determining which mapper to use: "standard_{30k|all}" (FileNameWCSMapper) or "clip_{30k|all}" (CLIPTestMapper)')
+    parser.add_argument('--data_split', type=str, default='eval', choices=['eval', 'test'],
+                        help='Which data split to use: eval (val_ files) or test (test_ files)')
     parser.add_argument('--cfgfile', type=str, default=None,
                         help='Path to the config file (defaults depend on --model_type)')
     parser.add_argument('--run_name', type=str, default=None,
@@ -452,7 +462,10 @@ if __name__ == "__main__":
     if args.run_name is None:
         args.run_name = defaults["run_name"]
     if args.test_data_fn is None:
-        args.test_data_fn = defaults["test_data_fn"]
+        if args.data_split == 'eval':
+            args.test_data_fn = defaults["eval_data_fn"]
+        else:
+            args.test_data_fn = defaults["test_data_fn"]
 
     # https://docs.pytorch.org/docs/stable/multiprocessing.html#sharing-strategies
     # 'file_system' strategy uses file names given to shm_open to identify the shared memory region
@@ -462,6 +475,7 @@ if __name__ == "__main__":
     print("-"*45)
     print(f"Starting inference with {args.num_gpus} GPUs...")
     print(f"Model type: {args.model_type}")
+    print(f"Data split: {args.data_split}")
     print(f"Score thresholds: {args.score_thresholds}")
     print(f"NMS thresholds: {args.nms_thresholds}")
     print(f"Total threshold combinations to run: {len(threshold_combos)}")
@@ -476,7 +490,7 @@ if __name__ == "__main__":
         machine_rank=0,
         dist_url=default_dist_url,
         args=(args.num_gpus, args.cfgfile, args.run_name,
-              args.test_data_fn, args.topk_per_img, threshold_combos, args.model_type),
+              args.test_data_fn, args.topk_per_img, threshold_combos, args.model_type, args.data_split),
     )
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
