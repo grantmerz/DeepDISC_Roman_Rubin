@@ -1,4 +1,3 @@
-import logging
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 import torch
@@ -15,10 +14,7 @@ from detectron2.modeling.backbone import Backbone, build_backbone
 from detectron2.modeling.proposal_generator import build_proposal_generator
 from detectron2.modeling.roi_heads import build_roi_heads
 from detectron2.modeling.postprocessing import detector_postprocess
-from detectron2.config import instantiate
-from detectron2.engine.defaults import create_ddp_model
-from detectron2.layers import ShapeSpec, cat
-
+from detectron2.layers import ShapeSpec
 
 class DynamicSwinTransformer(SwinTransformer):
     """ Dynamically calculates strides based on the provided patch_size.
@@ -33,7 +29,6 @@ class DynamicSwinTransformer(SwinTransformer):
         # lateral_features and top_down_features specifically
         self._out_feature_strides = {f"p{i}": (2 ** i) * self.patch_embed.patch_size[0] for i in self.out_indices}
         # for patch size 13, strides are p0: 13, p1:26, p2:52, p3:104
-# adapted from detectron2/modeling/meta_arch/rcnn.py
 
 # adapted from detectron2/modeling/meta_arch/rcnn.py
 class GeneralizedRCNNMultimodal(nn.Module):
@@ -64,6 +59,8 @@ class GeneralizedRCNNMultimodal(nn.Module):
         roman_pixel_std: Tuple[float],
         input_format: Optional[str] = None,
         vis_period: int = 0,
+        # loss weighting
+        beta: float = 1.0 # supervised loss weight
     ):
         """
         Args:
@@ -115,14 +112,10 @@ class GeneralizedRCNNMultimodal(nn.Module):
             self.backbone_k._out_feature_channels = new_channels
             outshape_k = aligned_outshape_k
             print(f"Final aligned features - Query: {list(outshape_q.keys())}, Key: {list(outshape_k.keys())}")
-        # ok now we should have everything aligned EXCEPT for the actual fpn and lateral 
-        # module names but those don't actually get used in FPN forward pass or in our MoCo so
-        # we keep them as is even though they're technically wrong names
-        #self.moco = MMClip(self.backbone_q, self.backbone_k, 
-        #                   outshape_q, outshape_k, hidden_dim, dim=dim, K=K, m=m, T=T)
-        
-        #self.moco_alpha = moco_alpha
         self.beta = beta
+        # ok now we should have everything aligned EXCEPT for the actual fpn and lateral 
+        # module names but those don't actually get used in FPN forward pass or in our CLIP so
+        # we keep them as is even though they're technically wrong names
 
         self.input_format = input_format
         self.vis_period = vis_period
@@ -235,13 +228,12 @@ class GeneralizedRCNNMultimodal(nn.Module):
         else:
             gt_instances = None
         
-        # we have to check if we have Roman data (training with MoCo) or just Rubin (validation loss)
+        # we have to check if we have Roman data (training with CLIP) or just Rubin (validation loss)
         has_roman_data = "image_roman" in batched_inputs[0]
         
         # run query backbone 
-        features_q = self.backbone_q(images_q_rubin.tensor)
+        features_q = self.backbone_q(images_q_rubin.tensor)        
         
-
         # features from the rubin encoder are sent to detection heads, if they have labels
         if self.proposal_generator is not None:
             proposals, proposal_losses = self.proposal_generator(images_q_rubin, features_q, gt_instances)
@@ -249,36 +241,34 @@ class GeneralizedRCNNMultimodal(nn.Module):
             assert "proposals" in batched_inputs[0]
             proposals = [x["proposals"].to(self.device) for x in batched_inputs]
             proposal_losses = {}
-
-        labeled_proposals, detector_losses = self.roi_heads(images_q_rubin, features_q, proposals, gt_instances)#, image_wcs)
+        # we need to grab the proposals from the roi heads so we can
+        # do contrastive loss on the features from those proposals
+        labeled_proposals, detector_losses = self.roi_heads(images_q_rubin, features_q, proposals, gt_instances)
         # if self.vis_period > 0:
         #     storage = get_event_storage()
         #     if storage.iter % self.vis_period == 0:
         #         self.visualize_training(batched_inputs, proposals)
         
         losses = {}
+        # beta weight for supervised losses
         losses.update({k: self.beta * v for k, v in detector_losses.items()})
         losses.update({k: self.beta * v for k, v in proposal_losses.items()})
-        
-        # add InfoNCE loss only if computed (training w/ Roman data)
+        # compute InfoNCE loss only if we have paired Roman data 
+        # Validation mode: skip contrastive loss (no Roman data available)
         if has_roman_data:
             images_k_roman = self.preprocess_image(batched_inputs, "image_roman", self.roman_pixel_mean, 
                                     self.roman_pixel_std, self.backbone_k.size_divisibility, 
                                     self.backbone_k.padding_constraints)
-
-            # grab the features computed through the query encoder
-            #np.save(f'/work/hdd/bdsp/yse2/lsst_runs/only_moco5_30k_rubin_test/images_rubin_{self.device}.npy',images_q_rubin.tensor.cpu().numpy())
-            #np.save(f'/work/hdd/bdsp/yse2/lsst_runs/only_moco5_30k_rubin_test/images_roman_{self.device}.npy',images_k_roman.tensor.cpu().numpy())
-            features_k = self.backbone_k(images_k_roman.tensor)
+            # grab the features computed through the key encoder - don't need grads
+            features_k = self.backbone_k(images_k_roman.tensor)  # keys: NxC
             contrastive_loss = self.roi_heads.forward_contrastive(
-                features_q,
-                features_k,
+                features_q, 
+                features_k, 
                 labeled_proposals,
                 gt_instances
-            )
-
+            )            
             losses.update(contrastive_loss)
-                
+
         return losses
 
     def inference(
@@ -343,9 +333,11 @@ class GeneralizedRCNNMultimodal(nn.Module):
 
             results, _ = self.roi_heads(imgs_rubin, features, proposals, None)#, image_wcs=image_wcs)
         else:
+            # we already have the detected boxes and classes, so we skip proposal generation and box head inference
+            # just run the box features through the mask/keypoint heads if they exist
             detected_instances = [x.to(self.device) for x in detected_instances]
+            # from detectron2/modeling/roi_heads/roi_heads.py, StandardROIHeads.forward_with_given_boxes
             results = self.roi_heads.forward_with_given_boxes(features, detected_instances)
-            # results = self.roi_heads._forward_redshift(features, results)#, image_wcs=image_wcs)
     
         if do_postprocess:
             assert not torch.jit.is_scripting(), "Scripting is not supported for postprocess."
@@ -383,51 +375,59 @@ class GeneralizedRCNNMultimodal(nn.Module):
         return processed_results
 
 class FeatureMapMLP(nn.Module):
-    def __init__(self,in_features,square_pad,hidden_dim,dim):
+    """
+    MLP module that processes feature maps by extracting features from the deepest level
+    and passing them through a MLP for dimensionality reduction
+    """
+    def __init__(self, in_features, square_pad, hidden_dim, dim):
+        """
+        Initialize the FeatureMapMLP module
+        
+        Args:
+            in_features: Dictionary mapping feature names to their shape information (stride, channels)
+            square_pad: Padding size for square feature maps
+            hidden_dim: Hidden dimension size for the intermediate layers of the MLP
+            dim: Output dimension size
+        """
         super().__init__()
 
+        # Store input feature information
         self.in_features = in_features
-        self.f_keys = list(self.in_features.keys())
-        f_shapes = list(self.in_features.values())
+        self.f_keys = list(self.in_features.keys())  # Extract feature map names (keys)
+        f_shapes = list(self.in_features.values())   # Extract feature map shape information
+        
+        # Extract stride information from each feature map shape
         strides = [s.stride for s in f_shapes]
+        # Get the number of channels from the first feature map (assumed uniform across levels)
         channel = f_shapes[0].channels
-        #assume kernel sizes of 4 for each 
-        shapes = [(channel,(square_pad+s-1)//s,(square_pad+s-1)//s) for s in strides]
-        #use all feature maps
-        #self.fcls = {}
-        #for i,f in enumerate(in_features.keys()):
-        #    self.fcls[f] = nn.Linear(np.prod(shapes[i]),hidden_dim)
-        #self.fcl_final = nn.Sequential(nn.Linear(hidden_dim,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,dim)),
-
-        #take the features from the deepest feature map
+        
+        # Calculate output spatial dimensions for each feature map based on stride and padding
+        shapes = [(channel, (square_pad+s-1)//s, (square_pad+s-1)//s) for s in strides]
+        
+        # Current approach uses only the deepest feature map for efficiency
+        # Adaptive average pooling reduces spatial dimensions to 1x1 for any input size
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-
+        # MLP stack: reduces channel dimension to output dimension with ReLU activations
         self.fcls = nn.Sequential(
-            #nn.Linear(np.prod(shapes[-1]),hidden_dim),
-            nn.Linear(channel,hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim,hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim,dim)
+            nn.Linear(channel, hidden_dim),      # Project from channel dimension to hidden dimension
+            nn.ReLU(),                            # Non-linear activation
+            nn.Linear(hidden_dim, hidden_dim),   # Additional hidden layer for model capacity
+            nn.ReLU(),                            # Non-linear activation
+            nn.Linear(hidden_dim, dim)           # Project to final output dimension
         )
 
     def forward(self, features):
-        # take the features from all levels of the feature map and run them
-        # each through a fully connected layer.
-        
-        #f_outs = []
-
-        #for f in self.in_features:
-        #    f_out=self.fcls[f](features[f].flatten())
-        #    f_outs.append(f_out)
-
-        #now add them together and run them through an MLP
-        #f_outs = torch.stack(f_outs, dim=0).sum(dim=0)   
-        #outputs = self.fcl_final(f_outs)
-
-        #just use the final feature map
-        features = self.avgpool(features[self.f_keys[-1]])
+        """
+        Forward pass through the module.
+        Args:
+            features: Dictionary of feature maps at different scales, keyed by feature level names
+        Returns:
+            Transformed feature vector of shape (batch_size, dim)
+        """
+        # Extract features from the deepest (last) feature map level for efficiency
+        features = self.avgpool(features[self.f_keys[-1]])  # reduce spatial dims to 1x1: (B, C, H, W) -> (B, C, 1, 1)
+        # Flatten to 2D tensor: (B, C) for MLP processing
         features = torch.flatten(features, 1)
-        #features = nn.Flatten()(features[self.f_keys[-1]])
+        # pass through MLP to get output embeddings
         outputs = self.fcls(features)
         return outputs

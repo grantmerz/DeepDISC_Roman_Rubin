@@ -79,7 +79,10 @@ class TimedLazyAstroTrainer(LazyAstroTrainer):
             losses = loss_dict
             loss_dict = {"total_loss": loss_dict}
         else:
-            losses = sum(loss_dict.values())
+            # Exclude non-loss metrics (e.g. logit_scale) from backward sum
+            # tracked for monitoring only and shldn't affect gradients
+            loss_keys_to_skip = {"logit_scale"}
+            losses = sum(v for k, v in loss_dict.items() if k not in loss_keys_to_skip)
             all_losses = [l.cpu().detach().item() for l in loss_dict.values()]
         # Backward pass time
         backward_start = time.perf_counter()

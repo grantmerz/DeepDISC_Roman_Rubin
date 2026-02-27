@@ -1,4 +1,3 @@
-import logging
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 import torch
@@ -618,11 +617,19 @@ def concat_all_gather(tensor):
 
     return output
 
-def return_frozen_model(cfg, freeze=True):
-    """Return a model formed from a LazyConfig with the backbone
-    frozen. Only the MLP/patch embedding layers will be trained.
+def return_key_frozen_model(cfg, freeze=True):
+    """Return a model formed from a LazyConfig with the key encoder
+    frozen and the query encoder trainable.
     
-    Currently, the key encoder isn't rly updating bc of param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
+    Training configuration:
+    - Patch embeddings (both key and query): Trainable
+    - Rest of Key encoder: Frozen
+    - Key MLP head: Frozen
+    - Query encoder backbone: Trainable
+    - Query MLP head: Trainable
+    
+    When the query backbone was frozen, the key encoder isn't updating because of 
+    param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
     Parameters
     ----------
     cfg : .py file
@@ -633,47 +640,21 @@ def return_frozen_model(cfg, freeze=True):
         torch model
     """
     model = instantiate(cfg.model)
-    # freezing pre-trained swin body, only training input layers (patch_embed) and heads (mlp)
-    print("DEBUG: Executing Test 2 - Freezing Backbone, Training Patch Embeddings and MLPs Only")
+    # freezing key encoder and key mlp head, training query backbone with mlp head and patch embeddings
+    print("DEBUG: Freezing Key Encoder and Key MLP Head, Training Query Backbone with MLP Head and Patch Embeddings")
     for name, param in model.named_parameters():
         # freeze everything first
         param.requires_grad = False
-        # query backbone updated 
-        if "_q" in name:
-            print(f"  Gradient Training Enabled: {name}")
-        # Exception 1: The Input Layers (Patch Embeddings - Both Roman and Rubin need to learn adapters)
+        # Exception 1: The Patch Embeddings (Both Key and Query need to learn adapters)
         # We need these to learn how to map pixels to the pre-trained feature space
         if "patch_embed" in name:
             param.requires_grad = True
             print(f"  Training Enabled: {name}")
-        # Exception 2: The MoCo Projection Heads (MLP)
-        # These need to learn the contrastive embedding space
-        # only train the query mlp since the key mlp is updated via momentum so let's keep it frozen
-        if "moco.mlp_q" in name:
+        # Exception 2: Query encoder backbone and MoCo Projection Heads (MLP) head (these learn the contrastive embedding space)
+        # The entire query encoder should be trainable including its MoCo MLP head
+        if "_q" in name:
             param.requires_grad = True
             print(f"  Training Enabled: {name}")
-
-    model.to(cfg.train.device)
-    model = create_ddp_model(model, **cfg.train.ddp)
-    return model
-
-def return_unfrozen_model(cfg, freeze=False):
-    """
-    Phase 2 Model:
-    - Rubin (Query): Fully Unfrozen (Backbone + Patch Embed + MLP) --> Trains with Gradients
-    - Roman (Key): Fully Frozen (Backbone + Patch Embed + MLP) --> Updates via Momentum
-    """
-    model = instantiate(cfg.model)
-    # print("DEBUG: Executing Phase 2 - Unfreezing Rubin, Keeping Roman Frozen")
-    for name, param in model.named_parameters():
-        # turn grads on for EVERYTHING
-        param.requires_grad = True
-        # Exception: Freeze the entire Roman Key Encoder making it updated via MOMENTUM
-        # The Key patch_embed is STATIC (no momentum, no gradients)
-        # if "_k" in name:
-        #     param.requires_grad = False
-        #     print(f"  Gradient Training Disabled: {name}")
-    
     model.to(cfg.train.device)
     model = create_ddp_model(model, **cfg.train.ddp)
     return model

@@ -10,7 +10,7 @@ from omegaconf import OmegaConf
 bs = 192 # for 4 H200 GPUS with 140G memory each as each GPU can handle bs=48
 # steps_per_epoch = num of steps per epoch = num of training images / bs
 # a training step/iteration is when the model weights are updated (once per batch)
-num_imgs = 30000
+num_imgs = 109782
 steps_per_epoch = num_imgs // bs
 
 metadata = OmegaConf.create() 
@@ -37,10 +37,10 @@ train.timing_save_period = steps_per_epoch # save timing to disk every n iters (
 
 dataloader.augs = dc2_train_augs
 dataloader.train.total_batch_size = bs
+# dataloader.train.num_workers = 16
 # when bs=96, bs * 6 but when bs=144, bs * 6 crashed so using bs * 4 and for bs=192, bs * 2
 dataloader.test.total_batch_size = bs * 2 # higher since no gradients being calculated
 dataloader.test.num_workers = 16
-
 model.proposal_generator.anchor_generator.sizes = [[8], [16], [32], [64], [128]]
 model.roi_heads.num_classes = numclasses
 model.roi_heads.batch_size_per_image = 512
@@ -70,61 +70,23 @@ model.backbone.bottom_up.use_checkpoint = True
 model.backbone.bottom_up.in_chans = 6
 
 # from training data of 109,782 imgs
-# model.pixel_mean = [
-#     0.057071752846241,
-#     0.05500221624970436,
-#     0.07863432168960571,
-#     0.11082268506288528,
-#     0.13925790786743164,
-#     0.21512141823768616,
-# ]
-
-# model.pixel_std = [
-#     0.9746726155281067,
-#     0.6917526721954346,
-#     0.9822554588317871,
-#     1.382053017616272,
-#     1.8204922676086426,
-#     2.6324615478515625,
-# ]
-
-# for 30k training set
 model.pixel_mean = [
-    0.05976027995347977,
-    0.056569650769233704,
-    0.0808037668466568,
-    0.11346549540758133,
-    0.14247749745845795,
-    0.22078551352024078,
+    0.057071752846241,
+    0.05500221624970436,
+    0.07863432168960571,
+    0.11082268506288528,
+    0.13925790786743164,
+    0.21512141823768616,
 ]
 
 model.pixel_std = [
-    1.0054351091384888,
-    0.7062947750091553,
-    1.0013556480407715,
-    1.4049317836761475,
-    1.8567354679107666,
-    2.689509153366089,
+    0.9746726155281067,
+    0.6917526721954346,
+    0.9822554588317871,
+    1.382053017616272,
+    1.8204922676086426,
+    2.6324615478515625,
 ]
-
-# LSST Data in 6 filters for 16 tiles
-# 7/11/25
-# model.pixel_mean = [
-#     0.05766211653019801,
-#     0.05522824341264653,
-#     0.08055171695300539,
-#     0.11272945612787254,
-#     0.14285408247959108,
-#     0.22691514861918002,
-# ]
-# model.pixel_std = [
-#     1.0329147035160937,
-#     0.6753845510365868,
-#     0.9406882743716739,
-#     1.3125461429047487,
-#     1.7310270468969295,
-#     2.7391247463323487,
-# ]
 
 model.proposal_generator.nms_thresh = 0.3
 for box_predictor in model.roi_heads.box_predictors:
