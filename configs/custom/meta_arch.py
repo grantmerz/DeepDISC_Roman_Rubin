@@ -52,6 +52,7 @@ class GeneralizedRCNNMultimodal(nn.Module):
         #mlp: nn.Module,
         proposal_generator: nn.Module,
         roi_heads: nn.Module,
+        beta: float = 1.0, # supervised loss weight
         rubin_pixel_mean: Tuple[float],
         rubin_pixel_std: Tuple[float],
         roman_pixel_mean: Tuple[float],

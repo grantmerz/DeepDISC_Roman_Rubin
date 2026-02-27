@@ -170,6 +170,7 @@ class CLIPEvalMapper(DataMapper):
     def __init__(self, *args, keypoint_hflip_indices=None, **kwargs):
         self.keypoint_hflip_indices = keypoint_hflip_indices
         super().__init__(*args, **kwargs)
+        
     
     def map_data(self, dataset_dict):
         """
