@@ -268,7 +268,6 @@ def inference(num_gpus, cfg_file, run_name,
                             )
 
             # sync before saving shards
-            # sync before gathering results
             comm.synchronize()
             total_time = time.perf_counter() - start_time
             avg_infer_time = np.mean(batch_inference_times)
@@ -325,7 +324,7 @@ def inference(num_gpus, cfg_file, run_name,
                 all_det_counts = []
                 for r in range(world_size):
                     sp = os.path.join(shard_dir, f'shard_s{test_score_thresh}_n{nms_thresh}_rank{r}.pt')
-                    shard = torch.load(sp, map_location='cpu')
+                    shard = torch.load(sp, map_location='cpu', weights_only=False)
                     all_preds.extend(shard['pred_instances'])
                     all_fns.extend(shard['file_names'])
                     all_wcs.extend(shard['wcs_info'])
@@ -468,7 +467,7 @@ if __name__ == "__main__":
         },
         "clip_all": {
             "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_100k.py",
-            "run_name":     "clip5_all_4h200_bs32_ep20",
+            "run_name":     "clip5_all_4h200_bs64_ep20",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_keypoints.json",
         },
