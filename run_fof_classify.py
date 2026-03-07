@@ -48,7 +48,7 @@ warnings.filterwarnings('ignore')
 # Config
 # ============================================================================
 MAG_LIMITS = {
-    'power_law': 26.07,
+    'power_law': 26.22,
     'gold': 25.3,
     'nominal': 26.42,
 }
