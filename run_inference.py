@@ -160,6 +160,12 @@ def inference(num_gpus, cfg_file, run_name,
         model.eval()
         if comm.is_main_process():
             logger.info("Checkpoint loaded successfully.")
+
+        # /tmp on Delta GPU nodes is 1.5TB local NVMe SSD, unique per node and job
+        # using it for shards avoids gloo TCP timeout on large comm.gather() calls (happens for all runs dealing with 500k dets)
+        shard_dir = f'/tmp/shards_{run_name}'
+        os.makedirs(shard_dir, exist_ok=True)
+        
         # sync before starting inference
         comm.synchronize()
         # loop through every possible combo
@@ -261,7 +267,7 @@ def inference(num_gpus, cfg_file, run_name,
                                 f"ETA: {eta:.1f}s"
                             )
 
-            # sync before gathering results
+            # sync before saving shards
             comm.synchronize()
             total_time = time.perf_counter() - start_time
             avg_infer_time = np.mean(batch_inference_times)
@@ -280,29 +286,54 @@ def inference(num_gpus, cfg_file, run_name,
             #         'pred_masks': instances.pred_masks.numpy(),
             #     }
             #     pred_dicts_cpu.append(pred_dict_cpu)
-
+            
+            # -------------------------------------------------------
+            # Each rank now saves its own shard to /tmp (local NVMe SSD)
+            # instead of communicating large objects over TCP via
+            # comm.gather(), which caused gloo timeout crashes
+            # -------------------------------------------------------
+            rank = comm.get_rank()
+            world_size = comm.get_world_size()
+            shard_path = os.path.join(shard_dir, f'shard_s{test_score_thresh}_n{nms_thresh}_rank{rank}.pt')
             # results from all GPUs to main process
             if comm.is_main_process():
                 logger.info("-"*45)
-                logger.info("Gathering the results from all GPUs...")
+                # logger.info("Gathering the results from all GPUs...")
+                logger.info("Saving per-rank shards to disk...")
                 logger.info("-"*45)
-            # num of detections from all GPUs
-            all_det_counts = comm.gather(total_num_dets, dst=0)
-            # all detection dicts and corresponding file names
-            gathered_pred_dicts = comm.gather(pred_instances, dst=0)
-            gathered_file_names = comm.gather(file_names, dst=0)
-            gathered_wcs_info = comm.gather(wcs_info, dst=0)
-            # clear GPU memory
+            torch.save({
+                'pred_instances': pred_instances,
+                'file_names':     file_names,
+                'wcs_info':       wcs_info,
+                'total_num_dets': total_num_dets,
+            }, shard_path)
+            
+            # wait for ALL ranks to finish writing before rank 0 reads
+            comm.synchronize()
+            
+            # clear GPU memory now that shards are safely on disk
             del pred_dicts, pred_instances
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             if comm.is_main_process():
-                # flatten lists
-                all_preds = [item for sublist in gathered_pred_dicts for item in sublist]
-                all_fns = [item for sublist in gathered_file_names for item in sublist]
-                all_wcs = [item for sublist in gathered_wcs_info for item in sublist]
-                assert len(all_preds) == len(all_fns) == len(all_wcs), "Mismatch in number of predictions, filenames, or WCS info!!"
+                # Load and merge all the shards
+                all_preds = []
+                all_fns   = []
+                all_wcs   = []
+                all_det_counts = []
+                for r in range(world_size):
+                    sp = os.path.join(shard_dir, f'shard_s{test_score_thresh}_n{nms_thresh}_rank{r}.pt')
+                    shard = torch.load(sp, map_location='cpu', weights_only=False)
+                    all_preds.extend(shard['pred_instances'])
+                    all_fns.extend(shard['file_names'])
+                    all_wcs.extend(shard['wcs_info'])
+                    all_det_counts.append(shard['total_num_dets'])
+                    os.remove(sp)  # clean up immediately after loading
+
+                assert len(all_preds) == len(all_fns) == len(all_wcs), \
+                    "Mismatch in number of predictions, filenames, or WCS info!!"
+                
                 logger.info("-"*45)
                 logger.info(f"Inference Done for {len(all_fns)} images.")
                 logger.info("-"*45)
@@ -424,7 +455,7 @@ if __name__ == "__main__":
         },
         "standard_all": {
             "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_lsst_100k.py",
-            "run_name":     "lsst5_all_4h200_bs192_ep50",
+            "run_name":     "lsst5_all_4h200_bs192_ep20",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_keypoints.json",
         },
@@ -436,7 +467,7 @@ if __name__ == "__main__":
         },
         "clip_all": {
             "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_100k.py",
-            "run_name":     "clip5_all_4h200_bs32_ep50",
+            "run_name":     "clip5_all_4h200_bs64_ep20",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_keypoints.json",
         },
