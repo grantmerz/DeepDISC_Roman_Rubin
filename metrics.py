@@ -70,9 +70,11 @@ def get_matched_truth_mag(dets, truths, prefix, mag_col='mag_i'):
     result.loc[matched_mask] = matched_truth_mags.values
     return result
 
+
 def _safe_div(num, denom):
     """Safe division returning 0.0 when denominator is 0."""
     return num / denom if denom > 0 else 0.0
+
 
 # ============================================================================
 # Scalar metrics
@@ -91,7 +93,7 @@ def compute_scalar_metrics(analysis_df, prefix):
     Returns
     -------
     dict : metric_name -> value
-        Contains counts, fractions, and derived rates.
+        Contains counts and fractions
     """
     p = prefix
     truths, dets = split_truth_det(analysis_df, prefix)
@@ -102,6 +104,22 @@ def compute_scalar_metrics(analysis_df, prefix):
     # --- Raw counts ---
     n_matched_truth = int(truths[f'{p}_is_matched'].sum())
     n_matched_det = int(dets[f'{p}_is_matched'].sum())
+    assert n_matched_det == n_matched_truth, (
+        f"Matched count mismatch: "
+        f"truth={n_matched_det}, det={n_matched_truth}"
+    )
+    # --- Unrec blend among matched ---
+    # each matched pair in an unrec blend group contributes one to each side so both counts shld match
+    n_unrec_blend_matched = int(
+        (truths[f'{p}_is_matched'] & truths[f'{p}_is_unrec_blend']).sum()
+    )
+    _n_unrec_blend_matched_det = int(
+        (dets[f'{p}_is_matched'] & dets[f'{p}_is_unrec_blend']).sum()
+    )
+    assert n_unrec_blend_matched == _n_unrec_blend_matched_det, (
+        f"Unrec blend matched count mismatch: "
+        f"truth={n_unrec_blend_matched}, det={_n_unrec_blend_matched_det}"
+    )
     n_spurious = int(dets[f'{p}_is_spurious'].sum())
     n_shred = int(dets[f'{p}_is_shred'].sum())
     n_missed = int(truths[f'{p}_is_missed'].sum())
@@ -121,12 +139,13 @@ def compute_scalar_metrics(analysis_df, prefix):
     purity = _safe_div(n_matched_det, n_det)
     f1 = (_safe_div(2 * completeness * purity, completeness + purity)
           if (completeness + purity) > 0 else 0.0)
-
+    
     # --- Blend fractions (truth side) ---
     blend_loss_frac = _safe_div(n_blended_away, n_truth)
     unrec_blend_frac_total = _safe_div(n_unrec_blend_truth, n_truth)
     unrec_blend_frac_blended = _safe_div(n_unrec_blend_truth, n_part_of_blend_truth)
-    resolved_rate = _safe_div(n_resolved_truth, n_part_of_blend_truth)
+    unrec_blend_frac_matched = _safe_div(n_unrec_blend_matched, n_matched_truth)
+    resolved_frac = _safe_div(n_resolved_truth, n_part_of_blend_truth)
 
     # --- Blend fractions (det side) ---
     unrec_blend_det_frac_total = _safe_div(n_unrec_blend_det, n_det)
@@ -153,6 +172,7 @@ def compute_scalar_metrics(analysis_df, prefix):
         'n_shredded': n_shredded,
         'n_unrec_blend_truth': n_unrec_blend_truth,
         'n_unrec_blend_det': n_unrec_blend_det,
+        'n_unrec_blend_matched': n_unrec_blend_matched,
         'n_resolved_truth': n_resolved_truth,
         'n_resolved_det': n_resolved_det,
         'n_part_of_blend_truth': n_part_of_blend_truth,
@@ -167,7 +187,8 @@ def compute_scalar_metrics(analysis_df, prefix):
         'blend_loss_frac': blend_loss_frac,
         'unrec_blend_frac_total': unrec_blend_frac_total,
         'unrec_blend_frac_blended': unrec_blend_frac_blended,
-        'resolved_rate': resolved_rate,
+        'unrec_blend_frac_matched': unrec_blend_frac_matched,
+        'resolved_frac': resolved_frac,
         # blend fractions (det)
         'unrec_blend_det_frac_total': unrec_blend_det_frac_total,
         'unrec_blend_det_frac_blended': unrec_blend_det_frac_blended,
@@ -178,6 +199,7 @@ def compute_scalar_metrics(analysis_df, prefix):
         'spurious_frac': spurious_frac,
         'missed_frac': missed_frac,
     }
+
 
 def print_scalar_metrics(metrics, label=''):
     """Pretty-print scalar metrics dict."""
@@ -208,5 +230,5 @@ def print_scalar_metrics(metrics, label=''):
           f"({m['unrec_blend_frac_total']*100:.2f}%)")
     print(f"  Resolved truths:     {m['n_resolved_truth']:>10,d}")
     print(f"  Part of blend:       {m['n_part_of_blend_truth']:>10,d}")
-    print(f"  Resolved rate:       {m['resolved_rate']:>10.4f}  "
-          f"({m['resolved_rate']*100:.2f}%)")
+    print(f"  Resolved rate:       {m['resolved_frac']:>10.4f}  "
+          f"({m['resolved_frac']*100:.2f}%)")

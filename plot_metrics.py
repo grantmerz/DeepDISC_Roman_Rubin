@@ -11,6 +11,8 @@ Two categories of plots:
     B) Grid search CSV plots (from metrics_*.csv files):
         - plot_heatmap()                    — single metric heatmap
         - plot_heatmap_comparison()         — side-by-side heatmaps across configs
+        - plot_purity_vs_completeness()     — scatter: purity vs completeness
+        - plot_threshold_impact()           — line: metric vs score/NMS threshold
 
 """
 
@@ -53,16 +55,18 @@ METRIC_LABELS = {
     'blend_loss_frac': 'Blend Loss Fraction',
     'unrec_blend_frac_total': 'Unrec Blend Frac (all truths)',
     'unrec_blend_frac_blended': 'Unrec Blend Frac (blended only)',
+    'unrec_blend_frac_matched': 'Unrec Blend Frac (matched truths)',
     'unrec_blend_det_frac_total': 'Unrec Blend Det Frac (all dets)',
     'unrec_blend_det_frac_blended': 'Unrec Blend Det Frac (blended dets)',
-    'resolved_rate': 'Resolved Blend Rate',
+    'resolved_frac': 'Resolved Blend Rate',
     'shred_frac': 'Shredding Fraction (truths)',
     'shred_det_frac': 'Shred Det Fraction',
     'spurious_frac': 'Spurious Fraction',
     'missed_frac': 'Missed Fraction',
 }
+
 LOWER_IS_BETTER = {
-    'blend_loss_frac', 'unrec_blend_frac_total', 'unrec_blend_frac_blended',
+    'blend_loss_frac', 'unrec_blend_frac_total', 'unrec_blend_frac_blended', 'unrec_blend_frac_matched',
     'unrec_blend_det_frac_total', 'unrec_blend_det_frac_blended',
     'shred_frac', 'shred_det_frac', 'spurious_frac', 'missed_frac',
 }
@@ -140,7 +144,9 @@ def plot_heatmap(df, col, ax=None, title=None, cmap=None,
         ax.set_title(title, fontsize=11)
 
     if own_fig:
-        plt.colorbar(im, ax=ax, shrink=0.8)
+        metric_key = '_'.join(col.rsplit('_', 1)[0].split('_')[1:])
+        cb_label = METRIC_LABELS.get(metric_key, metric_key)
+        plt.colorbar(im, ax=ax, shrink=0.8, label=cb_label)
         fig.tight_layout()
 
     return fig, ax, im
@@ -158,11 +164,14 @@ def plot_heatmap_comparison(dfs, labels, col, output_path=None, title=None,
     labels : list of str
         Panel titles (one per config).
     col : str
-        Column to plot.
+        Column to plot (e.g. 'dd_completeness_1.0').
     output_path : str or Path, optional
     title : str, optional
         Suptitle.
     """
+    # Derive human-readable metric label for the colorbar
+    metric_name = '_'.join(col.rsplit('_', 1)[0].split('_')[1:])
+    cbar_label = METRIC_LABELS.get(metric_name, metric_name)
     n = len(dfs)
     if n == 0:
         return None
@@ -197,7 +206,7 @@ def plot_heatmap_comparison(dfs, labels, col, output_path=None, title=None,
     if last_im is not None:
         fig.subplots_adjust(right=0.88)
         cbar_ax = fig.add_axes([0.90, 0.15, 0.02, 0.7])
-        fig.colorbar(last_im, cax=cbar_ax)
+        fig.colorbar(last_im, cax=cbar_ax, label=cbar_label)
 
     if title:
         fig.suptitle(title, fontsize=13, y=1.02)
@@ -206,3 +215,108 @@ def plot_heatmap_comparison(dfs, labels, col, output_path=None, title=None,
         fig.savefig(output_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
     return fig
+
+
+def plot_purity_vs_completeness(df, pipeline='dd', linking_lengths=None,
+                                 ax=None, title=None):
+    """
+    Scatter plot of purity vs completeness from grid search CSV,
+    colored by score threshold.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Grid search CSV.
+    pipeline : str
+        'dd' or 'lsst'.
+    linking_lengths : list of str, optional
+        LLs to plot. Auto-detected if None.
+    """
+    _owns_fig = ax is None
+    if _owns_fig:
+        fig, ax = plt.subplots(figsize=(8, 6))
+    else:
+        fig = ax.get_figure()
+
+    if linking_lengths is None:
+        linking_lengths = sorted(set(
+            col.rsplit('_', 1)[1] for col in df.columns
+            if col.startswith(f'{pipeline}_completeness_')
+        ))
+    sc = None
+    for ll in linking_lengths:
+        comp_col = f'{pipeline}_completeness_{ll}'
+        pur_col = f'{pipeline}_purity_{ll}'
+        if comp_col not in df.columns or pur_col not in df.columns:
+            print(f"Warning: Missing {comp_col} and/or {pur_col} columns for LL={ll}\". Skipping.")
+            continue
+
+        sc = ax.scatter(df[comp_col], df[pur_col],
+                        c=df['score_thresh'], cmap='viridis',
+                        s=30, alpha=0.7, edgecolors='k', linewidth=0.3,
+                        label=f'LL={ll}"')
+
+    ax.set_xlabel('Completeness', fontsize=12)
+    ax.set_ylabel('Purity', fontsize=12)
+    ax.set_title(title or f'{pipeline.upper()} Purity vs Completeness', fontsize=13)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    plt.colorbar(sc, ax=ax, label='Score Threshold')
+    if _owns_fig:
+        fig.tight_layout()
+    return fig, ax
+
+
+def plot_threshold_impact(df, threshold_type, pipeline='dd',
+                           linking_lengths=None, metrics_to_plot=None,
+                           ax=None, title=None):
+    """
+    Line plot showing how a metric changes with score or NMS threshold
+    (averaged over the other threshold).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Grid search CSV.
+    threshold_type : str
+        'score_thresh' or 'nms_thresh'.
+    pipeline : str
+    linking_lengths : list of str, optional
+    metrics_to_plot : list of str, optional
+        Metric names (without prefix/LL suffix). Default: completeness, purity.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+    else:
+        fig = ax.get_figure()
+
+    if linking_lengths is None:
+        linking_lengths = sorted(set(
+            col.rsplit('_', 1)[1] for col in df.columns
+            if col.startswith(f'{pipeline}_completeness_')
+        ))
+
+    if metrics_to_plot is None:
+        metrics_to_plot = ['completeness', 'purity']
+
+    color_cycle = plt.cm.tab10.colors
+    for i, metric in enumerate(metrics_to_plot):
+        for ll in linking_lengths:
+            col = f'{pipeline}_{metric}_{ll}'
+            if col not in df.columns:
+                continue
+            agg = df.groupby(threshold_type)[col].mean().reset_index()
+            ls = LL_STYLES.get(ll, '-')
+            label = f'{METRIC_LABELS.get(metric, metric)} (LL={ll}")'
+            ax.plot(agg[threshold_type], agg[col],
+                    color=color_cycle[i % len(color_cycle)],
+                    linestyle=ls, marker='o', markersize=4, label=label)
+
+    ax.set_xlabel(threshold_type.replace('_', ' ').title(), fontsize=12)
+    ax.set_ylabel('Metric Value', fontsize=12)
+    ax.set_title(title or f'{pipeline.upper()} Metrics vs {threshold_type.replace("_", " ").title()}',
+                 fontsize=13)
+    ax.legend(fontsize=8, loc='best')
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig, ax

@@ -14,12 +14,35 @@ Usage:
                                 --mag-limits gold gold gold \
                                 --buffers 0 1 2
 
+    ===== LSST Baseline 30k ======
+    Gold Mag Limit
+    --------------
     python plot_grid_search.py --metrics-dir ~/lsst_runs/lsst5_30k_4h200_bs192_ep50/metrics --csv-files gold_buf0/gs_metrics.csv gold_buf1/gs_metrics.csv gold_buf2/gs_metrics.csv --output-dir gold_buf0/gs_hmaps gold_buf1/gs_hmaps gold_buf2/gs_hmaps --mag-limits gold gold gold --buffers 0 1 2 --no-comparison
-    python plot_grid_search.py --metrics-dir ~/lsst_runs/lsst5_30k_4h200_bs192_ep50/metrics --csv-files gold_buf0/gs_metrics.csv gold_buf1/gs_metrics.csv gold_buf2/gs_metrics.csv --output-dir gold_cmp --mag-limits gold gold gold --buffers 0 1 2 --metrics completeness purity f1 --no-individual
+    python plot_grid_search.py --metrics-dir ~/lsst_runs/lsst5_30k_4h200_bs192_ep50/metrics --csv-files gold_buf0/gs_metrics.csv gold_buf1/gs_metrics.csv gold_buf2/gs_metrics.csv --output-dir gold_cmp --mag-limits gold gold gold --buffers 0 1 2 --metrics completeness purity f1 unrec_blend_frac_total unrec_blend_frac_blended unrec_blend_frac_matched --no-individual
+    
+    Power Law Mag Limit
+    -------------------
+    python plot_grid_search.py --metrics-dir ~/lsst_runs/lsst5_30k_4h200_bs192_ep50/metrics --csv-files pl_buf0/gs_metrics.csv pl_buf1/gs_metrics.csv pl_buf2/gs_metrics.csv --output-dir pl_buf0/gs_hmaps pl_buf1/gs_hmaps pl_buf2/gs_hmaps --mag-limits power_law power_law power_law --buffers 0 1 2 --no-comparison
+    python plot_grid_search.py --metrics-dir ~/lsst_runs/lsst5_30k_4h200_bs192_ep50/metrics --csv-files pl_buf0/gs_metrics.csv pl_buf1/gs_metrics.csv pl_buf2/gs_metrics.csv --output-dir pl_cmp --mag-limits power_law power_law power_law --buffers 0 1 2 --metrics completeness purity f1 unrec_blend_frac_total unrec_blend_frac_blended unrec_blend_frac_matched --no-individual
+    
+    ===== CLIP 30k ======
+    Gold Mag Limit
+    --------------
+    python plot_grid_search.py --metrics-dir ~/lsst_runs/clip5_30k_4h200_bs64_ep50/metrics --csv-files gold_buf0/gs_metrics.csv gold_buf1/gs_metrics.csv gold_buf2/gs_metrics.csv --output-dir gold_buf0/gs_hmaps gold_buf1/gs_hmaps gold_buf2/gs_hmaps --mag-limits gold gold gold --buffers 0 1 2 --no-comparison
+    python plot_grid_search.py --metrics-dir ~/lsst_runs/clip5_30k_4h200_bs64_ep50/metrics --csv-files gold_buf0/gs_metrics.csv gold_buf1/gs_metrics.csv gold_buf2/gs_metrics.csv --output-dir gold_cmp --mag-limits gold gold gold --buffers 0 1 2 --metrics completeness purity f1 unrec_blend_frac_total unrec_blend_frac_blended unrec_blend_frac_matched --no-individual
 
-    python plot_grid_search.py --metrics-dir ~/lsst_runs/clip5_30k_4h200_bs32_ep50/metrics --csv-files gold_buf0/gs_metrics.csv gold_buf1/gs_metrics.csv gold_buf2/gs_metrics.csv --output-dir gold_buf0/gs_hmaps gold_buf1/gs_hmaps gold_buf2/gs_hmaps --mag-limits gold gold gold --buffers 0 1 2 --no-comparison
-    python plot_grid_search.py --metrics-dir ~/lsst_runs/clip5_30k_4h200_bs32_ep50/metrics --csv-files gold_buf0/gs_metrics.csv gold_buf1/gs_metrics.csv gold_buf2/gs_metrics.csv --output-dir gold_cmp --mag-limits gold gold gold --buffers 0 1 2 --metrics completeness purity f1 --no-individual
+    Power Law Mag Limit
+    -------------------
+    python plot_grid_search.py --metrics-dir ~/lsst_runs/clip5_30k_4h200_bs64_ep50/metrics --csv-files pl_buf0/gs_metrics.csv pl_buf1/gs_metrics.csv pl_buf2/gs_metrics.csv --output-dir pl_buf0/gs_hmaps pl_buf1/gs_hmaps pl_buf2/gs_hmaps --mag-limits power_law power_law power_law --buffers 0 1 2 --no-comparison
+    python plot_grid_search.py --metrics-dir ~/lsst_runs/clip5_30k_4h200_bs64_ep50/metrics --csv-files pl_buf0/gs_metrics.csv pl_buf1/gs_metrics.csv pl_buf2/gs_metrics.csv --output-dir pl_cmp --mag-limits power_law power_law power_law --buffers 0 1 2 --metrics completeness purity f1 unrec_blend_frac_total unrec_blend_frac_blended unrec_blend_frac_matched --no-individual
+    
+    ===== LSST Baseline All ======
+    Gold Mag Limit
+    --------------
+    python plot_grid_search.py --metrics-dir ~/lsst_runs/lsst5_all_4h200_bs192_ep20/metrics --csv-files gold_buf0/gs_metrics.csv gold_buf1/gs_metrics.csv gold_buf2/gs_metrics.csv --output-dir gold_buf0/gs_hmaps gold_buf1/gs_hmaps gold_buf2/gs_hmaps --mag-limits gold gold gold --buffers 0 1 2 --no-comparison
+    python plot_grid_search.py --metrics-dir ~/lsst_runs/lsst5_all_4h200_bs192_ep20/metrics --csv-files gold_buf0/gs_metrics.csv gold_buf1/gs_metrics.csv gold_buf2/gs_metrics.csv --output-dir gold_cmp --mag-limits gold gold gold --buffers 0 1 2 --metrics completeness purity f1 unrec_blend_frac_total unrec_blend_frac_blended unrec_blend_frac_matched --no-individual
 
+    
     # With absolute paths (use --absolute-paths flag)
     python plot_grid_search.py --csv-files /path/to/file1.csv /path/to/file2.csv \
                                 --output-dir /path/to/output --absolute-paths \
@@ -29,13 +52,13 @@ Usage:
 
 import argparse
 import os
-import re
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 
 from plot_metrics import (
-    plot_heatmap, plot_heatmap_comparison,
+    plot_heatmap, plot_heatmap_comparison, 
+    plot_purity_vs_completeness,
     METRIC_LABELS
 )
 from grid_search import FRACTION_METRICS
@@ -81,6 +104,25 @@ def plot_individual_heatmaps(csv_info, output_dir, linking_lengths,
             plt.close(fig)
             print(f'  Saved: {out_path.name}')
 
+def plot_purity_vs_comp_scatter(csv_info, output_dir, linking_lengths, 
+                                pipeline='dd', absolute_paths=False):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    df = pd.read_csv(csv_info['path'])
+    label = csv_info['label']
+    ml = csv_info['mag_limit']
+    buf = csv_info['buffer']
+
+    fig, _ = plot_purity_vs_completeness(df, pipeline=pipeline,
+                                        linking_lengths=[str(ll) for ll in linking_lengths],
+                                        title=f'{pipeline.upper()} Purity vs Completeness | {label}')
+    if absolute_paths:
+        out_path = output_dir / f'{pipeline}_purity_vs_completeness_{ml}_buf{buf}.png'
+    else:
+        out_path = output_dir / f'{pipeline}_purity_vs_completeness.png'
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Saved: {out_path.name}')
 
 # ============================================================================
 # Comparison grid figures
@@ -124,12 +166,48 @@ def plot_comparison_grids(csv_infos, output_dir, pipeline='dd',
 
 
 # ============================================================================
+# Purity vs completeness comparison across CSVs
+# ============================================================================
+def plot_purity_comp_comparison(csv_infos, output_dir, pipeline='dd', linking_lengths=None):
+    """
+    Side-by-side purity vs completeness scatter plots, one subplot per CSV.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    n = len(csv_infos)
+    # Load first CSV to infer number of unique thresholds for sizing,
+    # similar to what we do for plot_heatmap_comparison's panel size logic
+    tmp = pd.read_csv(csv_infos[0]['path'])
+    panel_w = max(5, tmp['score_thresh'].nunique() * 0.7 + 1.5)
+    panel_h = max(3.5, tmp['nms_thresh'].nunique() * 0.55 + 1)
+    fig, axes = plt.subplots(1, n, figsize=(panel_w * n + 1.5, panel_h + 1.2),
+                             squeeze=False, sharex=True, sharey=True)
+
+    for idx, info in enumerate(csv_infos):
+        df = pd.read_csv(info['path'])
+        ax = axes[0][idx]
+        plot_purity_vs_completeness(
+            df, pipeline=pipeline,
+            linking_lengths=[str(ll) for ll in linking_lengths] if linking_lengths else None,
+            ax=ax,
+            title=f'{pipeline.upper()} Purity vs Completeness | {info["label"]}'
+        )
+
+    fig.tight_layout()
+    out_path = output_dir / f'compare_{pipeline}_purity_vs_completeness.png'
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Saved: {out_path.name}')
+
+
+# ============================================================================
 # CLI
 # ============================================================================
 def parse_args():
     parser = argparse.ArgumentParser(
         description='Plot heatmaps from grid search CSV results')
-    parser.add_argument('--metrics-dir',
+    parser.add_argument('--metrics-dir', required=True,
                         help='Base directory for relative CSV and output paths')
     parser.add_argument('--csv-files', nargs='+', required=True,
                         help='Paths to CSV files (relative to --metrics-dir by default)')
@@ -234,6 +312,9 @@ def main():
                                         pipeline=args.pipeline,
                                         metrics=args.metrics,
                                         absolute_paths=args.absolute_paths)
+            plot_purity_vs_comp_scatter(info, subdir, linking_lengths=args.linking_lengths,
+                                        pipeline=args.pipeline,
+                                        absolute_paths=args.absolute_paths)
 
     if not args.no_comparison and len(csv_infos) > 1:
         print(f"\nGenerating comparison grids...")
@@ -242,6 +323,11 @@ def main():
         plot_comparison_grids(csv_infos, comp_dir, pipeline=args.pipeline,
                               metrics=args.metrics,
                               linking_lengths=args.linking_lengths)
+        print(f"\nGenerating purity vs completeness comparison...")
+        plot_purity_comp_comparison(
+            csv_infos, comp_dir, pipeline=args.pipeline,
+            linking_lengths=args.linking_lengths
+        )
     elif not args.no_comparison and len(csv_infos) == 1:
         print("\nSkipping comparison grids (only 1 CSV file).")
 
