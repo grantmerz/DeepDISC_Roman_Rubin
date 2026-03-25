@@ -58,9 +58,7 @@ class GeneralizedRCNNMultimodal(nn.Module):
         roman_pixel_mean: Tuple[float],
         roman_pixel_std: Tuple[float],
         input_format: Optional[str] = None,
-        vis_period: int = 0,
-        # loss weighting
-        beta: float = 1.0 # supervised loss weight
+        vis_period: int = 0
     ):
         """
         Args:
@@ -373,61 +371,3 @@ class GeneralizedRCNNMultimodal(nn.Module):
             r = detector_postprocess(results_per_image, height, width)
             processed_results.append({"instances": r})
         return processed_results
-
-class FeatureMapMLP(nn.Module):
-    """
-    MLP module that processes feature maps by extracting features from the deepest level
-    and passing them through a MLP for dimensionality reduction
-    """
-    def __init__(self, in_features, square_pad, hidden_dim, dim):
-        """
-        Initialize the FeatureMapMLP module
-        
-        Args:
-            in_features: Dictionary mapping feature names to their shape information (stride, channels)
-            square_pad: Padding size for square feature maps
-            hidden_dim: Hidden dimension size for the intermediate layers of the MLP
-            dim: Output dimension size
-        """
-        super().__init__()
-
-        # Store input feature information
-        self.in_features = in_features
-        self.f_keys = list(self.in_features.keys())  # Extract feature map names (keys)
-        f_shapes = list(self.in_features.values())   # Extract feature map shape information
-        
-        # Extract stride information from each feature map shape
-        strides = [s.stride for s in f_shapes]
-        # Get the number of channels from the first feature map (assumed uniform across levels)
-        channel = f_shapes[0].channels
-        
-        # Calculate output spatial dimensions for each feature map based on stride and padding
-        shapes = [(channel, (square_pad+s-1)//s, (square_pad+s-1)//s) for s in strides]
-        
-        # Current approach uses only the deepest feature map for efficiency
-        # Adaptive average pooling reduces spatial dimensions to 1x1 for any input size
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        # MLP stack: reduces channel dimension to output dimension with ReLU activations
-        self.fcls = nn.Sequential(
-            nn.Linear(channel, hidden_dim),      # Project from channel dimension to hidden dimension
-            nn.ReLU(),                            # Non-linear activation
-            nn.Linear(hidden_dim, hidden_dim),   # Additional hidden layer for model capacity
-            nn.ReLU(),                            # Non-linear activation
-            nn.Linear(hidden_dim, dim)           # Project to final output dimension
-        )
-
-    def forward(self, features):
-        """
-        Forward pass through the module.
-        Args:
-            features: Dictionary of feature maps at different scales, keyed by feature level names
-        Returns:
-            Transformed feature vector of shape (batch_size, dim)
-        """
-        # Extract features from the deepest (last) feature map level for efficiency
-        features = self.avgpool(features[self.f_keys[-1]])  # reduce spatial dims to 1x1: (B, C, H, W) -> (B, C, 1, 1)
-        # Flatten to 2D tensor: (B, C) for MLP processing
-        features = torch.flatten(features, 1)
-        # pass through MLP to get output embeddings
-        outputs = self.fcls(features)
-        return outputs
