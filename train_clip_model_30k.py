@@ -83,7 +83,16 @@ def main(args, freeze):
     
     # Set the output directory
     cfg.OUTPUT_DIR = output_dir
+    cfg.TIMING_DIR = os.path.join(cfg.OUTPUT_DIR, "timing")
+    cfg.CHECKPOINTS_DIR = os.path.join(cfg.OUTPUT_DIR, "checkpoints")
+    cfg.PREDS_DIR = os.path.join(cfg.OUTPUT_DIR, "preds")
+    cfg.PREDS_EVAL_DIR = os.path.join(cfg.PREDS_DIR, "eval")
+    cfg.PREDS_TEST_DIR = os.path.join(cfg.PREDS_DIR, "test")
     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
+    os.makedirs(cfg.TIMING_DIR, exist_ok=True)
+    os.makedirs(cfg.CHECKPOINTS_DIR, exist_ok=True)
+    os.makedirs(cfg.PREDS_EVAL_DIR, exist_ok=True)
+    os.makedirs(cfg.PREDS_TEST_DIR, exist_ok=True)
     
     # Iterations for 15, 25, 35, 50 epochs
     steps_per_epoch = cfg.dataloader.steps_per_epoch
@@ -91,37 +100,72 @@ def main(args, freeze):
     e2 = steps_per_epoch * 25
     e3 = steps_per_epoch * 35
     efinal = steps_per_epoch * 50
-    # e1 = steps_per_epoch
-    # e2 = steps_per_epoch * 2
+    # e1 = steps_per_epoch * 2
+    # e2 = steps_per_epoch * 5
     # efinal = e2
-    # e3 = steps_per_epoch * 35
-    # efinal = steps_per_epoch * 50
+    # Training mode switches
+    # - stage1_15only=True: run only first 15 epochs from scratch to just see loss curves
+    # and then we set to False when we want the full 50-epoch schedule
+    stage1_15only = True
+    # - continue_from_epoch_15_with_weight_init=True: load 15-epoch weights,
+    #   restart iter=0, and continue with shifted milestones
+    continue_from_epoch_15_with_weight_init = False
     val_per = steps_per_epoch
     model = return_lazy_model(cfg, freeze)
     mapper = cfg.dataloader.train.mapper(
-        cfg.dataloader.train.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
+        cfg.dataloader.train.imagereader,
+        cfg.dataloader.key_mapper,
+        cfg.dataloader.augs,
+        keypoint_hflip_indices=[0],
     ).map_data
     loader = return_train_loader(cfg, mapper)
     
     eval_mapper = cfg.dataloader.test.mapper(
-        cfg.dataloader.test.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
+        cfg.dataloader.test.imagereader,
+        cfg.dataloader.key_mapper,
+        cfg.dataloader.augs,
+        keypoint_hflip_indices=[0],
     ).map_data
     eval_loader = return_test_loader(cfg, eval_mapper)
     cfg.optimizer.params.model = model
     # if freeze:
     # setting up epochs and learning rate for training all layers
-    cfg.SOLVER.STEPS = [e1,e2,e3]
+    if stage1_15only:
+        # No LR decay inside the first 15-epoch probe run.
+        cfg.SOLVER.STEPS = []
+        cfg.SOLVER.MAX_ITER = e1
+        cfg.optimizer.lr = 0.001
+    elif continue_from_epoch_15_with_weight_init:
+        # We are NOT resuming optimizer/scheduler state so we restart at iter=0
+        # from stage-1 weights. Shift global milestones (25,35) by -15 epochs
+        # Global target still ends at epoch 50, so local run length is 35 epochs
+        start_epoch = 15
+        cfg.SOLVER.STEPS = [e2 - e1, e3 - e1]   # local epochs 10, 20
+        cfg.SOLVER.MAX_ITER = efinal - e1        # local epochs 35
+        # from SOLVER.GAMMA = 0.1 set in yacs_style_defaults.py which is what we import from in our config file
+        # so LR needs to be at the right rate for the decays at epochs 25 and 35
+        cfg.optimizer.lr = 0.0001 
+        logger.info(
+            f"Continue-from-{start_epoch} mode: steps={cfg.SOLVER.STEPS}, "
+            f"max_iter={cfg.SOLVER.MAX_ITER}, "
+            f"lr={cfg.optimizer.lr}"
+        )        
+    else:
+        cfg.SOLVER.STEPS = [e1, e2, e3]
+        cfg.SOLVER.MAX_ITER = efinal
+        cfg.optimizer.lr = 0.001
+        
+    # cfg.SOLVER.STEPS = [e1,e2,e3]
     # cfg.SOLVER.STEPS = [e1]
-    cfg.SOLVER.MAX_ITER = efinal
-    
-    cfg.optimizer.lr = 0.001
+    # cfg.SOLVER.MAX_ITER = efinal
+    # cfg.optimizer.lr = 0.001
     optimizer = return_optimizer(cfg)
     
     # choosing hooks for trainer
     saveHook = return_savehook(run_name, steps_per_epoch)
     schedulerHook = return_schedulerhook(optimizer)
     # lossHook = return_evallosshook(5, model, eval_loader)
-    lossHook = return_timed_evallossHook(val_per, model, eval_loader)
+    # lossHook = return_timed_evallossHook(val_per, model, eval_loader)
     # earlyStopHook = return_early_stoppingHook(
     #     patience=steps_per_epoch,  # an epoch w/o improvement
     #     val_period=val_per,  # val period (every epoch)
@@ -137,15 +181,15 @@ def main(args, freeze):
     #     save_best=True,  # save best model
     #     output_name=f"{run_name}_best_TEST"
     # )
-    # hookList = [schedulerHook, saveHook]
-    hookList = [lossHook, schedulerHook, saveHook]
+    hookList = [schedulerHook, saveHook]
+    # hookList = [lossHook, schedulerHook, saveHook]
     # hookList = [lossHook, earlyStopHook, schedulerHook, saveHook]
     
     trainer = return_timed_lazy_trainer(model, loader, optimizer, cfg, hookList)
     trainer.set_period(steps_per_epoch // 2)
     trainer.train(0, cfg.SOLVER.MAX_ITER)
-    # trainer.set_period(5)
-    # trainer.train(0, 10) # for testing
+    # trainer.set_period(10)
+    # trainer.train(0, 30) # for testing
     # # now we need to wrap training in a try-except to catch early stopping
     # early_stop = False
     # try:
@@ -190,7 +234,7 @@ def main(args, freeze):
     comm.synchronize()
     # destroy the default process group (on every rank)
     if dist.is_available() and dist.is_initialized():
-        torch.dist.destroy_process_group()
+        dist.destroy_process_group()
     return
     # else:
     #     pass 
@@ -222,4 +266,3 @@ if __name__ == "__main__":
     gc.collect()
 
     print(f"Took {time.time()-t0} seconds")
-
