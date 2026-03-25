@@ -1,3 +1,4 @@
+import os
 import json
 import time
 
@@ -35,11 +36,18 @@ class TimedLazyAstroTrainer(LazyAstroTrainer):
         self.timing_rolling_window_size = cfg.train.timing_rolling_window_size
         self.timing_save_period = cfg.train.timing_save_period
         self.output_dir = cfg.OUTPUT_DIR
+        self.timing_dir = getattr(cfg, "TIMING_DIR", os.path.join(self.output_dir, "timing"))
+        self.checkpoints_dir = getattr(cfg, "CHECKPOINTS_DIR", os.path.join(self.output_dir, "checkpoints"))
+        self.preds_dir = getattr(cfg, "PREDS_DIR", os.path.join(self.output_dir, "preds"))
+        self.preds_eval_dir = getattr(cfg, "PREDS_EVAL_DIR", os.path.join(self.preds_dir, "eval"))
+        self.preds_test_dir = getattr(cfg, "PREDS_TEST_DIR", os.path.join(self.preds_dir, "test"))
+        # Keep intermediate checkpoints out of OUTPUT_DIR root
+        self.checkpointer.save_dir = self.checkpoints_dir
         self.logger = setup_logger()
         
         self.start_time = None
         self.early_stop = False
-    
+
     # start timing right before training begins
     def before_train(self):
         super().before_train()
@@ -50,6 +58,18 @@ class TimedLazyAstroTrainer(LazyAstroTrainer):
             self.logger.info(f" Rolling Average over last: {self.timing_rolling_window_size} iters")
             self.logger.info(f" Save Period: {self.timing_save_period} iters")
 
+    def _is_loss_key(self, k):
+        """Return True if key k should contribute to the backward sum.
+        Excludes:
+        - "logit_scale"           : learnable temperature param (existing)
+        - "contr/*" keys    : diagnostic scalars from forward_contrastive
+        """
+        if k == "logit_scale":
+            return False
+        if k.startswith("contr/"):
+            return False
+        return True
+    
     # Adding timing info to each step
     def run_step(self):
         # check if early stopping was triggered
@@ -79,10 +99,9 @@ class TimedLazyAstroTrainer(LazyAstroTrainer):
             losses = loss_dict
             loss_dict = {"total_loss": loss_dict}
         else:
-            # Exclude non-loss metrics (e.g. logit_scale) from backward sum
+            # Exclude non-loss metrics (e.g. logit_scale, contr/) from backward sum
             # tracked for monitoring only and shldn't affect gradients
-            loss_keys_to_skip = {"logit_scale"}
-            losses = sum(v for k, v in loss_dict.items() if k not in loss_keys_to_skip)
+            losses = sum(v for k, v in loss_dict.items() if self._is_loss_key(k))
             all_losses = [l.cpu().detach().item() for l in loss_dict.values()]
         # Backward pass time
         backward_start = time.perf_counter()
@@ -172,18 +191,18 @@ class TimedLazyAstroTrainer(LazyAstroTrainer):
                 'total': float(np.mean(self.times['total_times'])) if self.times['total_times'] else 0
             }
         }
-        summary_file = f"{self.output_dir}/timing{suffix}.json"
+        summary_file = os.path.join(self.timing_dir, f"timing{suffix}.json")
         with open(summary_file, 'w') as f:
             json.dump(summary, f, indent=2)
         self.logger.info(f"Saved timing summary to {summary_file}")
         # only save time arrays on the final save after training is complete
         if last:
-            np.save(f"{self.output_dir}/data_times.npy", np.array(self.times['data_times']))
-            np.save(f"{self.output_dir}/forward_times.npy", np.array(self.times['loss_times']))
-            np.save(f"{self.output_dir}/backward_times.npy", np.array(self.times['backward_times']))
-            np.save(f"{self.output_dir}/optimizer_step_times.npy", np.array(self.times['step_times']))
-            np.save(f"{self.output_dir}/total_times.npy", np.array(self.times['total_times']))
-            self.logger.info(f"Saved time arrays to {self.output_dir}")
+            np.save(os.path.join(self.timing_dir, "data_times.npy"), np.array(self.times['data_times']))
+            np.save(os.path.join(self.timing_dir, "forward_times.npy"), np.array(self.times['loss_times']))
+            np.save(os.path.join(self.timing_dir, "backward_times.npy"), np.array(self.times['backward_times']))
+            np.save(os.path.join(self.timing_dir, "optimizer_step_times.npy"), np.array(self.times['step_times']))
+            np.save(os.path.join(self.timing_dir, "total_times.npy"), np.array(self.times['total_times']))
+            self.logger.info(f"Saved time arrays to {self.timing_dir}")
 
     # print timing info after training is complete and save the arrays
     def after_train(self):
