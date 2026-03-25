@@ -12,7 +12,7 @@ import math
 # 4 A100x4 GPUs (40GB VRAM) --> bs = 16 (4 per gpu) (Max GPU util and ~85% GPU memory), test_bs = bs * 2
 # bs = 16
 # 4 H200 GPUS (140G VRAM) --> bs = 32 (8 per gpu) (Max GPU Util and ~87-95% GPU memory), test_bs = bs * 2 
-bs = 32 # for 4 H200 GPUS with 140G memory each as each GPU can handle bs=48
+bs = 64 # for 4 H200 GPUS with 140G memory each as each GPU can handle bs=48
 # steps_per_epoch = num of steps per epoch = num of training images / bs
 # a training step/iteration is when the model weights are updated (once per batch)
 num_imgs = 109782
@@ -217,11 +217,11 @@ def key_mapper(dataset_dict):
     return fn
 
 dataloader.key_mapper = key_mapper
-dataloader.train.mapper = CLIPMapper(keypoint_hflip_indices=[0])
+dataloader.train.mapper = CLIPMapper
 reader = DualRomanRubinImageReader()
 dataloader.train.imagereader = reader
 
-dataloader.test.mapper = CLIPEvalMapper(keypoint_hflip_indices=[0]) 
+dataloader.test.mapper = CLIPEvalMapper
 eval_reader = RomanRubinImageReader()
 dataloader.test.imagereader = eval_reader
 dataloader.steps_per_epoch = steps_per_epoch

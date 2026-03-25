@@ -166,8 +166,8 @@ def roman_key_mapper(dataset_dict):
     return fn
 
 dataloader.key_mapper = roman_key_mapper
-dataloader.test.mapper = loaders.DictMapper(keypoint_hflip_indices=[0])
-dataloader.train.mapper = loaders.DictMapper(keypoint_hflip_indices=[0])
+dataloader.test.mapper = loaders.DictMapper
+dataloader.train.mapper = loaders.DictMapper
 reader = RomanRubinImageReader()
 dataloader.imagereader = reader
 dataloader.steps_per_epoch = steps_per_epoch
