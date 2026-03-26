@@ -8,6 +8,9 @@ from detectron2.data.detection_utils import convert_image_to_rgb
 from detectron2.layers import move_device_like, ShapeSpec
 from detectron2.structures import ImageList, Instances
 from detectron2.utils.events import get_event_storage
+from detectron2.config import instantiate
+from detectron2.engine.defaults import create_ddp_model
+
 
 from detectron2.modeling import SwinTransformer
 from detectron2.modeling.backbone import Backbone, build_backbone
@@ -15,6 +18,9 @@ from detectron2.modeling.proposal_generator import build_proposal_generator
 from detectron2.modeling.roi_heads import build_roi_heads
 from detectron2.modeling.postprocessing import detector_postprocess
 from detectron2.layers import ShapeSpec
+
+from detectron2.modeling.roi_heads import select_foreground_proposals
+from detectron2.modeling.proposal_generator.proposal_utils import add_ground_truth_to_proposals
 
 class DynamicSwinTransformer(SwinTransformer):
     """ Dynamically calculates strides based on the provided patch_size.
@@ -47,18 +53,20 @@ class GeneralizedRCNNMultimodal(nn.Module):
     def __init__(
         self,
         *,
-        backbone_q: Backbone, # rubin - Query encoder providing us the features to be aligned
-        backbone_k: Backbone, # roman - Key/Momentum encoder providing us high-quality features as a ref
+        backbone_student: Backbone, # rubin - Query encoder providing us the features to be aligned
+        backbone_teacher: Backbone, # roman - Key/Momentum encoder providing us high-quality features as a ref
         #mlp: nn.Module,
         proposal_generator: nn.Module,
         roi_heads: nn.Module,
-        beta: float = 1.0, # supervised loss weight
         rubin_pixel_mean: Tuple[float],
         rubin_pixel_std: Tuple[float],
-        roman_pixel_mean: Tuple[float],
-        roman_pixel_std: Tuple[float],
+        combined_pixel_mean: Tuple[float],
+        combined_pixel_std: Tuple[float],
         input_format: Optional[str] = None,
-        vis_period: int = 0
+        vis_period: int = 0,
+        # loss weighting
+        #alpha: float = 1.0, # kd loss weight
+        beta: float = 1.0 # supervised loss weight
     ):
         """
         Args:
@@ -71,29 +79,29 @@ class GeneralizedRCNNMultimodal(nn.Module):
             vis_period: the period to run visualization. Set to 0 to disable.
         """
         super().__init__()
-        self.backbone_q = backbone_q # rubin
-        self.backbone_k = backbone_k # roman
+        self.backbone_student = backbone_student # rubin
+        self.backbone_teacher = backbone_teacher # roman
         self.proposal_generator = proposal_generator
         self.roi_heads = roi_heads
         
-        outshape_q = backbone_q.output_shape()
-        outshape_k = backbone_k.output_shape()
+        outshape_q = backbone_student.output_shape()
+        outshape_k = backbone_teacher.output_shape()
         # Ok, so we also need to align FPN output features for MoCo. since diff patch sizes 
         # cause different stride values FPN auto-names these features differently 
         # (based on log2(stride)). But, we need matching names for MoCo. So, let's just manually
         # rename key encoder's features to match query encoder's naming scheme
-        features_q_names = list(outshape_q.keys())
-        features_k_names = list(outshape_k.keys())
+        features_student_names = list(outshape_q.keys())
+        features_teacher_names = list(outshape_k.keys())
         # align the feature names only if they don't match
-        if features_q_names != features_k_names:
-            print(f"Aligning feature names: {features_k_names} --> {features_q_names}")
+        if features_student_names != features_teacher_names:
+            print(f"Aligning feature names: {features_teacher_names} --> {features_student_names}")
             # scaling ratio
-            patch_ratio = self.backbone_k.bottom_up.patch_embed.patch_size[0] / self.backbone_q.bottom_up.patch_embed.patch_size[0]
+            patch_ratio = self.backbone_teacher.bottom_up.patch_embed.patch_size[0] / self.backbone_student.bottom_up.patch_embed.patch_size[0]
             print(f"Patch size ratio (key/query): {patch_ratio:.2f}")
             new_strides = {}
             new_channels = {}
             aligned_outshape_k = {}
-            for q_name, k_name in zip(features_q_names, features_k_names):
+            for q_name, k_name in zip(features_student_names, features_teacher_names):
                 # new stride based on Query stride and Patch Ratio
                 # e.g., 32 (Query) * 3.25 (Ratio) = 104 (Key)
                 q_stride = outshape_q[q_name].stride
@@ -105,15 +113,13 @@ class GeneralizedRCNNMultimodal(nn.Module):
                 new_channels[q_name] = k_channels
                 aligned_outshape_k[q_name] = ShapeSpec(channels=k_channels, stride=k_stride_scaled)
             # backbone's internal metadata
-            self.backbone_k._out_features = list(new_strides.keys())
-            self.backbone_k._out_feature_strides = new_strides
-            self.backbone_k._out_feature_channels = new_channels
+            self.backbone_teacher._out_features = list(new_strides.keys())
+            self.backbone_teacher._out_feature_strides = new_strides
+            self.backbone_teacher._out_feature_channels = new_channels
             outshape_k = aligned_outshape_k
             print(f"Final aligned features - Query: {list(outshape_q.keys())}, Key: {list(outshape_k.keys())}")
+        #self.alpha=alpha
         self.beta = beta
-        # ok now we should have everything aligned EXCEPT for the actual fpn and lateral 
-        # module names but those don't actually get used in FPN forward pass or in our CLIP so
-        # we keep them as is even though they're technically wrong names
 
         self.input_format = input_format
         self.vis_period = vis_period
@@ -122,14 +128,18 @@ class GeneralizedRCNNMultimodal(nn.Module):
 
         self.register_buffer("rubin_pixel_mean", torch.tensor(rubin_pixel_mean).view(-1, 1, 1), False)
         self.register_buffer("rubin_pixel_std", torch.tensor(rubin_pixel_std).view(-1, 1, 1), False)
-        self.register_buffer("roman_pixel_mean", torch.tensor(roman_pixel_mean).view(-1, 1, 1), False)
-        self.register_buffer("roman_pixel_std", torch.tensor(roman_pixel_std).view(-1, 1, 1), False)
+        self.register_buffer("combined_pixel_mean", torch.tensor(combined_pixel_mean).view(-1, 1, 1), False)
+        self.register_buffer("combined_pixel_std", torch.tensor(combined_pixel_std).view(-1, 1, 1), False)
         assert (
             self.rubin_pixel_mean.shape == self.rubin_pixel_std.shape
         ), f"{self.rubin_pixel_mean} and {self.rubin_pixel_std} have different shapes!"
         assert (
-            self.roman_pixel_mean.shape == self.roman_pixel_std.shape
-        ), f"{self.roman_pixel_mean} and {self.roman_pixel_std} have different shapes!"
+            self.combined_pixel_mean.shape == self.combined_pixel_std.shape
+        ), f"{self.combined_pixel_mean} and {self.combined_pixel_std} have different shapes!"
+
+
+        # We need to freeze the teacher_backbone
+
 
     @classmethod
     def from_config(cls, cfg):
@@ -142,8 +152,8 @@ class GeneralizedRCNNMultimodal(nn.Module):
             "vis_period": cfg.VIS_PERIOD,
             "rubin_pixel_mean": cfg.MODEL.RUBIN_PIXEL_MEAN,
             "rubin_pixel_std": cfg.MODEL.RUBIN_PIXEL_STD,
-            "roman_pixel_mean": cfg.MODEL.ROMAN_PIXEL_MEAN,
-            "roman_pixel_std": cfg.MODEL.ROMAN_PIXEL_STD
+            "combined_pixel_mean": cfg.MODEL.COMBINED_PIXEL_MEAN,
+            "combined_pixel_std": cfg.MODEL.COMBINED_PIXEL_STD
         }
 
     @property
@@ -213,62 +223,57 @@ class GeneralizedRCNNMultimodal(nn.Module):
         """
         if not self.training:
             return self.inference(batched_inputs)
-        
+
+        losses = {}
         # must pass in size_divisibility for both backbones since it'll be different for each backbone
         # and we pass this in so that both Roman and Rubin can have teh same sized feature maps
         images_q_rubin = self.preprocess_image(batched_inputs, "image_rubin", self.rubin_pixel_mean, 
-                                         self.rubin_pixel_std, self.backbone_q.size_divisibility, 
-                                         self.backbone_q.padding_constraints)
+                                         self.rubin_pixel_std, self.backbone_student.size_divisibility, 
+                                         self.backbone_student.padding_constraints)
         
         # for first run we use all instances (100% labeled data)
         if "instances" in batched_inputs[0]:
             gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
         else:
             gt_instances = None
+
         
-        # we have to check if we have Roman data (training with CLIP) or just Rubin (validation loss)
-        has_roman_data = "image_roman" in batched_inputs[0]
+        # we have to check if we have Roman data (training with teacher) or just Rubin (validation loss)
+        has_combined_data = "image_combined" in batched_inputs[0]
         
         # run query backbone 
-        features_q = self.backbone_q(images_q_rubin.tensor)        
-        
+        features_student = self.backbone_student(images_q_rubin.tensor)
         # features from the rubin encoder are sent to detection heads, if they have labels
         if self.proposal_generator is not None:
-            proposals, proposal_losses = self.proposal_generator(images_q_rubin, features_q, gt_instances)
+            proposals, proposal_losses = self.proposal_generator(images_q_rubin, features_student, gt_instances)
         else:
             assert "proposals" in batched_inputs[0]
             proposals = [x["proposals"].to(self.device) for x in batched_inputs]
             proposal_losses = {}
-        # we need to grab the proposals from the roi heads so we can
-        # do contrastive loss on the features from those proposals
-        labeled_proposals, detector_losses = self.roi_heads(images_q_rubin, features_q, proposals, gt_instances)
-        # if self.vis_period > 0:
-        #     storage = get_event_storage()
-        #     if storage.iter % self.vis_period == 0:
-        #         self.visualize_training(batched_inputs, proposals)
-        
-        losses = {}
+
+        losses.update({k: self.beta * v for k, v in proposal_losses.items()})
+
+        #If we have the roman data, we use knowledge distillation from the teacher model to the student model 
+        if has_combined_data:
+            images_combined = self.preprocess_image(batched_inputs, "image_combined", self.combined_pixel_mean, 
+                                    self.combined_pixel_std, self.backbone_teacher.size_divisibility, 
+                                    self.backbone_teacher.padding_constraints)
+            # grab the features computed through the frozen teacher - don't need grads
+            features_teacher = self.backbone_teacher(images_combined.tensor)  # keys: NxC
+            #kd_loss = self.knowledge_distillation(features_student, features_teacher, proposals, gt_instances)
+            #losses.update({k: self.alpha * v for k, v in kd_loss.items()})
+            labeled_proposals, detector_losses = self.roi_heads(images_q_rubin, features_student, proposals, 
+                                                        gt_instances, features_teacher)
+        else:
+            labeled_proposals, detector_losses = self.roi_heads(images_q_rubin, features_student, proposals, 
+                                                        gt_instances)
         # beta weight for supervised losses
         losses.update({k: self.beta * v for k, v in detector_losses.items()})
-        losses.update({k: self.beta * v for k, v in proposal_losses.items()})
-        # compute InfoNCE loss only if we have paired Roman data 
-        # Validation mode: skip contrastive loss (no Roman data available)
-        if has_roman_data:
-            images_k_roman = self.preprocess_image(batched_inputs, "image_roman", self.roman_pixel_mean, 
-                                    self.roman_pixel_std, self.backbone_k.size_divisibility, 
-                                    self.backbone_k.padding_constraints)
-            # grab the features computed through the key encoder - don't need grads
-            features_k = self.backbone_k(images_k_roman.tensor)  # keys: NxC
-            contrastive_loss = self.roi_heads.forward_contrastive(
-                features_q, 
-                features_k, 
-                labeled_proposals,
-                gt_instances
-            )            
-            losses.update(contrastive_loss)
-
+            
         return losses
 
+
+    
     def inference(
         self,
         batched_inputs: List[Dict[str, torch.Tensor]],
@@ -316,11 +321,11 @@ class GeneralizedRCNNMultimodal(nn.Module):
             "image_rubin", 
             self.rubin_pixel_mean,
             self.rubin_pixel_std, 
-            self.backbone_q.size_divisibility,
-            self.backbone_q.padding_constraints
+            self.backbone_student.size_divisibility,
+            self.backbone_student.padding_constraints
         )
         # run through query encoder
-        features = self.backbone_q(imgs_rubin.tensor)
+        features = self.backbone_student(imgs_rubin.tensor)
 
         if detected_instances is None:
             if self.proposal_generator is not None:
@@ -371,3 +376,28 @@ class GeneralizedRCNNMultimodal(nn.Module):
             r = detector_postprocess(results_per_image, height, width)
             processed_results.append({"instances": r})
         return processed_results
+
+def return_frozen_teacher_model(cfg, freeze_teacher=True):
+    """Return a model formed from a LazyConfig with the backbone
+    frozen. Only the head layers will be trained.
+
+    Parameters
+    ----------
+    cfg : .py file
+        a LazyConfig
+
+    Returns
+    -------
+        torch model
+    """
+    model = instantiate(cfg.model)
+
+    if freeze_teacher:
+        for param in model.backbone_teacher.parameters():
+            param.requires_grad = False
+
+
+    model.to(cfg.train.device)
+    model = create_ddp_model(model, **cfg.train.ddp)
+
+    return model

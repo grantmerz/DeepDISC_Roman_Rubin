@@ -10,9 +10,10 @@ import math
 # bs: total batch size spread across multiple GPUs & make sure it's divisible by the number of GPUs
 
 # 4 A100x4 GPUs (40GB VRAM) --> bs = 16 (4 per gpu) (Max GPU util and ~85% GPU memory), test_bs = bs * 2
-# bs = 16
+# bs = 32 # for 2 A100x4 GPUs
 # 4 H200 GPUS (140G VRAM) --> bs = 32 (8 per gpu) (Max GPU Util and ~87-95% GPU memory), test_bs = bs * 2 
-bs = 32 # for 4 H200 GPUS with 140G memory each as each GPU can handle bs=48
+# bs = 64 # for 4 H200 GPUS with 140G memory each as each GPU can handle bs=48
+bs=192
 # steps_per_epoch = num of steps per epoch = num of training images / bs
 # a training step/iteration is when the model weights are updated (once per batch)
 num_imgs = 30000
@@ -30,7 +31,10 @@ from ..COCO.cascade_mask_rcnn_swin_b_in21k_50ep import dataloader, model, train,
 from ..custom.image_readers import DualRomanRubinImageReader, RomanRubinImageReader
 from ..custom.mappers import CLIPMapper, CLIPEvalMapper
 from ..custom.meta_arch import GeneralizedRCNNMultimodal, DynamicSwinTransformer
-from ..custom.roiheads import ContrastiveCascadeROIHeads
+# from ..custom.roiheads import ContrastiveCascadeROIHeads
+from ..custom.roiheads_test import ContrastiveCascadeROIHeadsFlatten
+from ..custom.roiheads_cl import ContrastiveCascadeROIHeads
+from ..custom.transforms import dc2_train_augs_512
 from detectron2.layers import ShapeSpec
 from detectron2.modeling.poolers import ROIPooler
 from detectron2.modeling.roi_heads import KRCNNConvDeconvUpsampleHead
@@ -84,6 +88,7 @@ for box_predictor in model.roi_heads.box_predictors:
 
 # use _target_ to only swap the class type but keeps existing args from parent config
 model.roi_heads._target_ = ContrastiveCascadeROIHeads
+# model.roi_heads._target_ = ContrastiveCascadeROIHeadsFlatten
 model.roi_heads.contrastive_dim = 128
 model.roi_heads.contrastive_hidden_dim = 1024
 model.roi_heads.contrastive_weight = 1.0
@@ -247,11 +252,11 @@ def key_mapper(dataset_dict):
     return fn
 
 dataloader.key_mapper = key_mapper
-dataloader.train.mapper = CLIPMapper(keypoint_hflip_indices=[0])
+dataloader.train.mapper = CLIPMapper
 reader = DualRomanRubinImageReader()
 dataloader.train.imagereader = reader
 
-dataloader.test.mapper = CLIPEvalMapper(keypoint_hflip_indices=[0]) 
+dataloader.test.mapper = CLIPEvalMapper
 eval_reader = RomanRubinImageReader()
 dataloader.test.imagereader = eval_reader
 dataloader.steps_per_epoch = steps_per_epoch

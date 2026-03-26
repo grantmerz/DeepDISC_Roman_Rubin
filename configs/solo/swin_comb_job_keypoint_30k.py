@@ -7,7 +7,8 @@ from omegaconf import OmegaConf
 # Local variables and metadata
 # ---------------------------------------------------------------------------- #
 # bs: total batch size spread across multiple GPUs & make sure it's divisible by the number of GPUs
-bs = 192 # for 4 H200 GPUS with 140G memory each as each GPU can handle bs=48
+#bs = 192 # for 4 H200 GPUS with 140G memory each as each GPU can handle bs=48
+bs= 144 # for combined data set, play it safe with bs 144
 # steps_per_epoch = num of steps per epoch = num of training images / bs
 # a training step/iteration is when the model weights are updated (once per batch)
 num_imgs = 30000
@@ -22,14 +23,16 @@ numclasses = len(metadata.classes)
 # ---------------------------------------------------------------------------- #
 # Get values from templates
 from ..COCO.cascade_mask_rcnn_swin_b_in21k_50ep import dataloader, model, train, lr_multiplier, optimizer
-from ..custom.image_readers import RomanRubinImageReader
+from ..custom.image_readers import DualRomanRubinImageReader
+from ..custom.mappers import ResizeCombinedMapper
+
+import deepdisc.model.loaders as loaders
+from deepdisc.data_format.augment_image import dc2_train_augs
 from detectron2.layers import ShapeSpec
 from detectron2.modeling.poolers import ROIPooler
 from detectron2.modeling.roi_heads import KRCNNConvDeconvUpsampleHead
 from detectron2.config import LazyCall as L
 
-import deepdisc.model.loaders as loaders
-from deepdisc.data_format.augment_image import dc2_train_augs
 
 # Overrides of the template COCO config
 # This is the cascade mask rcnn of an ImageNet-swin_base_patch4_window7_224_21k model
@@ -45,13 +48,12 @@ dataloader.train.total_batch_size = bs
 # when bs=96, bs * 6 but when bs=144, bs * 6 crashed so using bs * 4 and for bs=192, bs * 2
 dataloader.test.total_batch_size = bs * 2 # higher since no gradients being calculated
 dataloader.test.num_workers = 16
-
 model.proposal_generator.anchor_generator.sizes = [[8], [16], [32], [64], [128]]
 model.roi_heads.num_classes = numclasses
 model.roi_heads.batch_size_per_image = 512
 
-# Keypoint ROI head taken from the config in detectron2 repo 
-# detectron2/model_zoo/configs/common/models/keypoint_rcnn_fpn.py
+
+#Keypoint ROI head taken from the config on detectron2 repo 
 model.roi_heads.update(
     keypoint_in_features=["p2", "p3", "p4", "p5"],
     keypoint_pooler=L(ROIPooler)(
@@ -62,16 +64,18 @@ model.roi_heads.update(
     ),
     keypoint_head=L(KRCNNConvDeconvUpsampleHead)(
         input_shape=ShapeSpec(channels=256, width=14, height=14),
-        num_keypoints=1, # only 1 keypoint for the centroid of source
+        num_keypoints=1,
         conv_dims=[512] * 8,
         loss_normalizer="visible",
     ),
 )
 
-# Keypoint AP degrades (though box AP improves) when using plain L1 loss
-# so setting smooth_l1_beta to 0.5 (default is 0 which is just L1 loss)
+#Keypoint AP degrades (though box AP improves) when using plain L1 loss
 for box_predictor in model.roi_heads.box_predictors:
     box_predictor.smooth_l1_beta = 0.5
+
+
+
 
 """
 Since the in_features are ("p0", "p1", "p2", "p3"), 
@@ -86,7 +90,8 @@ Our max LSST size is 151x151 so we pad to 160x160 (32*5).
 You can theoretically set square_pad to whatever you want, but setting it to a value not divisible by size_divisibility 
 just results in extra padding being added to make it divisible anyway.
 """
-model.backbone.square_pad = 160
+
+model.backbone.square_pad = 512
 # using gradient checkpointing to save memory
 # works by not storing intermediate activations for each layer, 
 # instead recomputing them during the backward pass. 
@@ -94,26 +99,8 @@ model.backbone.square_pad = 160
 # But, it lets us use larger batch sizes
 model.backbone.bottom_up.use_checkpoint = True
 # for 6 channels (ugrizy)
-model.backbone.bottom_up.in_chans = 6
+model.backbone.bottom_up.in_chans = 9
 
-# from training data of 109,782 imgs
-# model.pixel_mean = [
-#     0.057071752846241,
-#     0.05500221624970436,
-#     0.07863432168960571,
-#     0.11082268506288528,
-#     0.13925790786743164,
-#     0.21512141823768616,
-# ]
-
-# model.pixel_std = [
-#     0.9746726155281067,
-#     0.6917526721954346,
-#     0.9822554588317871,
-#     1.382053017616272,
-#     1.8204922676086426,
-#     2.6324615478515625,
-# ]
 
 # for 30k training set
 model.pixel_mean = [
@@ -123,8 +110,10 @@ model.pixel_mean = [
     0.11346549540758133,
     0.14247749745845795,
     0.22078551352024078,
+    1.0947377681732178,
+    1.2559534311294556,
+    1.3356200456619263,
 ]
-
 model.pixel_std = [
     1.0054351091384888,
     0.7062947750091553,
@@ -132,26 +121,14 @@ model.pixel_std = [
     1.4049317836761475,
     1.8567354679107666,
     2.689509153366089,
+    31.218294143676758,
+    32.78688049316406,
+    32.67300796508789,
 ]
 
-# LSST Data in 6 filters for 16 tiles
-# 7/11/25
-# model.pixel_mean = [
-#     0.05766211653019801,
-#     0.05522824341264653,
-#     0.08055171695300539,
-#     0.11272945612787254,
-#     0.14285408247959108,
-#     0.22691514861918002,
-# ]
-# model.pixel_std = [
-#     1.0329147035160937,
-#     0.6753845510365868,
-#     0.9406882743716739,
-#     1.3125461429047487,
-#     1.7310270468969295,
-#     2.7391247463323487,
-# ]
+
+
+
 
 model.proposal_generator.nms_thresh = 0.3
 for box_predictor in model.roi_heads.box_predictors:
@@ -161,15 +138,22 @@ for box_predictor in model.roi_heads.box_predictors:
     
 # change this function depending on the metadata format
 # needs to return where the cutout image data for each cutout is stored
-def roman_key_mapper(dataset_dict):
-    fn = dataset_dict["file_name"]
-    return fn
+def lsst_key_mapper(dataset_dict):
+    key = dataset_dict["file_name"]
+    k = key.replace("/u/","/work/hdd/bdsp/")
+    return k
 
-dataloader.key_mapper = roman_key_mapper
-dataloader.test.mapper = loaders.DictMapper
-dataloader.train.mapper = loaders.DictMapper
-reader = RomanRubinImageReader()
-dataloader.imagereader = reader
+dataloader.key_mapper = lsst_key_mapper
+dataloader.test.mapper = ResizeCombinedMapper
+dataloader.train.mapper = ResizeCombinedMapper
+reader = DualRomanRubinImageReader()
+dataloader.train.imagereader = reader
+dataloader.test.imagereader = reader
+dataloader.train.keypoint_hflip_indices=[0]
+dataloader.test.keypoint_hflip_indices=[0]
+dataloader.train.cache_dir='/work/hdd/bfhm/g4merz/wcs_map_cache/train_30k_keypoints_wcs'
+dataloader.test.cache_dir='/work/hdd/bfhm/g4merz/wcs_map_cache/val_4k_keypoints_wcs'
+
 dataloader.steps_per_epoch = steps_per_epoch
 # ---------------------------------------------------------------------------- #
 # Yaml-style config (was formerly saved as a .yaml file, loaded to cfg_loader)

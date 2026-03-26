@@ -8,6 +8,7 @@ import sys
 import json
 import traceback
 import torch
+import torch.distributed as dist
 import argparse
 import gc
 import time
@@ -33,7 +34,7 @@ from detectron2.engine.defaults import create_ddp_model
 from detectron2.checkpoint import DetectionCheckpointer
 
 # DeepDisc imports
-from custom.mappers import FileNameMapper, FileNameWCSMapper, CLIPTestMapper
+from custom.mappers import FileNameMapper, FileNameWCSMapper, CLIPTestMapper, return_custom_test_loader
 from deepdisc.data_format.register_data import register_data_set
 from deepdisc.model.loaders import return_test_loader
 
@@ -46,7 +47,8 @@ MAPPER_REGISTRY = {
 }
 
 def inference(num_gpus, cfg_file, run_name,
-              test_data_fn, topk_per_img, threshold_combos, model_type, data_split):
+              test_data_fn, topk_per_img, threshold_combos, 
+              model_type, data_split, resume=False):
     """
     Main inference function to be launched on each GPU.
     Will be called by detectron2.engine.launch() for each GPU process.
@@ -59,8 +61,10 @@ def inference(num_gpus, cfg_file, run_name,
         threshold_combos: List of (score_thresh, nms_thresh) tuples to test
         model_type: One of "standard_{30k|all}" or "clip_{30k|all}" — selects the test DataLoader mapper
         data_split: Which data split to use: 'eval' or 'test'
+        resume: Flag to skip threshold combos whose output .json already exists
     """
     logger = setup_logger()
+
     try:
         logger.info(f"Process started on GPU rank {comm.get_local_rank()}/{comm.get_world_size()}")
         base_run_dir = os.path.expanduser('~/lsst_runs/')
@@ -84,6 +88,7 @@ def inference(num_gpus, cfg_file, run_name,
             logger.info(f"  Config File: {cfg_file}")
             logger.info(f"  topk_per_img: {topk_per_img}")
             logger.info(f"  Total threshold combinations: {len(threshold_combos)}")
+            logger.info(f"  Resume Toggle: {resume}")
             for idx, (s, n) in enumerate(threshold_combos, 1):
                 logger.info(f"    {idx}. score={s}, nms={n}")
 
@@ -139,7 +144,7 @@ def inference(num_gpus, cfg_file, run_name,
         mapper = cfg.dataloader.test.mapper(
             imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
         ).map_data
-        test_loader = return_test_loader(cfg, mapper)
+        test_loader = return_custom_test_loader(cfg, mapper)
         if torch.cuda.is_available():
             cfg.train.device = "cuda"
         else:
@@ -170,6 +175,25 @@ def inference(num_gpus, cfg_file, run_name,
         comm.synchronize()
         # loop through every possible combo
         for combo_idx, (test_score_thresh, nms_thresh) in enumerate(threshold_combos, 1):
+            skip = torch.zeros(1, dtype=torch.int32, device=cfg.train.device)
+            # check if output alr exists only on main GPU
+            if comm.is_main_process() and resume:
+                output_file = f'{run_dir}/preds/{data_split}/pred_s{test_score_thresh}_n{nms_thresh}.json'
+                if os.path.exists(output_file):
+                    logger.info(f"Existing s{test_score_thresh}n{nms_thresh} file found!")
+                    skip[0] = 1
+
+            if num_gpus > 1 and dist.is_available() and dist.is_initialized():
+                # broadcast Rank 0's decision to all other ranks
+                dist.broadcast(skip, src=0)
+            # if rank0 said skip, all ranks skip
+            if skip.item() == 1:
+                if comm.is_main_process():
+                    logger.info(f"Skipping combo {combo_idx}/{len(threshold_combos)}: "
+                                f"score={test_score_thresh}, nms={nms_thresh} (already exists)")
+                comm.synchronize()
+                continue
+            
             if comm.is_main_process():
                 logger.info("="*60)
                 logger.info(f"Threshold combination {combo_idx}/{len(threshold_combos)}")
@@ -186,7 +210,7 @@ def inference(num_gpus, cfg_file, run_name,
             per_img_inference_times = []
             per_img_data_times = []
             per_img_total_times = []
-            pred_dicts = []
+            pred_instances = []
             file_names = []
             wcs_info = []
             total_compute_time = 0.0
@@ -224,10 +248,13 @@ def inference(num_gpus, cfg_file, run_name,
                     infer_time = time.perf_counter() - infer_start
                     batch_inference_times.append(infer_time)
                     total_compute_time += infer_time
-                    pred_dicts.extend(metrics_dict)
-                    total_dets = sum(len(result['instances']) for result in metrics_dict)
+                    # pred_dicts.extend(metrics_dict)
+                    # total_dets = sum(len(result['instances']) for result in metrics_dict)
+                    pred_instances.extend([r['instances'].to('cpu') for r in metrics_dict])
+                    total_dets = sum(len(r) for r in pred_instances[-len(metrics_dict):])
                     total_num_dets += total_dets
-
+                    del batch, metrics_dict
+                    gc.collect()
                     # calculate per-image times
                     per_img_infer = infer_time / batch_size
                     per_img_data = data_load_time / batch_size
@@ -275,7 +302,7 @@ def inference(num_gpus, cfg_file, run_name,
             data_time = total_time - total_infer_time
 
             # let's first move instances to CPU and extract only needed data to avoid GPU OOM during gather
-            pred_instances = [d['instances'].to('cpu') for d in pred_dicts]
+            # pred_instances = [d['instances'].to('cpu') for d in pred_dicts]
             # for d in pred_dicts:
             #     instances = d['instances'].to('cpu')
             #     # Extract only what you need, not the full Instance object
@@ -312,7 +339,8 @@ def inference(num_gpus, cfg_file, run_name,
             comm.synchronize()
             
             # clear GPU memory now that shards are safely on disk
-            del pred_dicts, pred_instances
+            del pred_instances
+            gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -461,7 +489,7 @@ if __name__ == "__main__":
         },
         "clip_30k": {
             "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py",
-            "run_name":     "clip5_30k_4h200_bs32_ep50",
+            "run_name":     "clip5_30k_4h200_bs64_ep50",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
         },
@@ -506,6 +534,8 @@ if __name__ == "__main__":
                         help='List of NMS thresholds to test (e.g., --nms_thresholds 0.2 0.3 0.4)')
     parser.add_argument('--num_gpus', type=int, default=4,
                         help='Number of GPUs to use')
+    parser.add_argument('--resume', action='store_true', default=False,
+                        help='Skip threshold combinations whose output .json already exists')
     args = parser.parse_args()
 
     # Fill in model-type-specific defaults for unspecified arguments
@@ -520,10 +550,6 @@ if __name__ == "__main__":
         else:
             args.test_data_fn = defaults["test_data_fn"]
 
-    # https://docs.pytorch.org/docs/stable/multiprocessing.html#sharing-strategies
-    # 'file_system' strategy uses file names given to shm_open to identify the shared memory region
-    # and avoids caching the file descriptors obtained from it meaning we can have more workers
-    torch.multiprocessing.set_sharing_strategy('file_system')  # allows for num_workers=16 on test DataLoader
     threshold_combos = list(itertools.product(args.score_thresholds, args.nms_thresholds))
     print("-"*45)
     print(f"Starting inference with {args.num_gpus} GPUs...")
@@ -543,7 +569,8 @@ if __name__ == "__main__":
         machine_rank=0,
         dist_url=default_dist_url,
         args=(args.num_gpus, args.cfgfile, args.run_name,
-              args.test_data_fn, args.topk_per_img, threshold_combos, args.model_type, args.data_split),
+              args.test_data_fn, args.topk_per_img, threshold_combos, 
+              args.model_type, args.data_split, args.resume),
     )
     if torch.cuda.is_available():
         torch.cuda.empty_cache()

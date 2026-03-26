@@ -98,7 +98,10 @@ def main(args, freeze):
     val_per = steps_per_epoch
     model = return_lazy_model(cfg, freeze)
     mapper = cfg.dataloader.train.mapper(
-        cfg.dataloader.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
+        cfg.dataloader.imagereader,
+        cfg.dataloader.key_mapper,
+        cfg.dataloader.augs,
+        keypoint_hflip_indices=[0]
     ).map_data
     loader = return_train_loader(cfg, mapper)
     eval_loader = return_test_loader(cfg, mapper)
