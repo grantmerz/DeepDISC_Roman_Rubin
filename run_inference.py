@@ -14,6 +14,7 @@ import gc
 import time
 import glob
 import random
+import socket
 import cv2
 import numpy as np
 import pandas as pd
@@ -45,6 +46,56 @@ MAPPER_REGISTRY = {
     "clip_30k": CLIPTestMapper,
     "clip_all": CLIPTestMapper,
 }
+
+def build_threshold_combos(score_thresholds, nms_thresholds, no_combo=False):
+    """Build threshold pairs from the provided score and NMS lists
+    By default this returns the full cartesian product. When ``no_combo`` is
+    enabled, thresholds are paired by index instead, so ``score[i]`` runs with
+    ``nms[i]`` and both lists must have the same length
+    """
+    if no_combo:
+        if len(score_thresholds) != len(nms_thresholds):
+            raise ValueError(
+                "--no_combo requires the same number of score and NMS "
+                "thresholds."
+            )
+        return list(zip(score_thresholds, nms_thresholds))
+    return list(itertools.product(score_thresholds, nms_thresholds))
+
+def select_dist_port() -> int:
+    """Return a per-run distributed port with collision avoidance.
+
+    Priority:
+    1) Respect ``MASTER_PORT`` if provided by the scheduler/launcher.
+    2) Derive a stable per-job candidate from ``SLURM_JOB_ID``.
+    3) Fall back to a random high port.
+    4) If candidate is busy, ask the OS for a free local port.
+    """
+    master_port = os.environ.get("MASTER_PORT")
+    if master_port is not None:
+        try:
+            port = int(master_port)
+            if 1 <= port <= 65535:
+                print(f"Using {port}")
+                return port
+        except ValueError:
+            pass
+
+    job_id = os.environ.get("SLURM_JOB_ID")
+    if job_id and job_id.isdigit():
+        candidate = 15000 + (int(job_id) % 45000)
+    else:
+        candidate = random.SystemRandom().randint(15000, 60000)
+
+    # Probe candidate port on localhost; if unavailable, ask OS for any free port.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", candidate))
+            return candidate
+        except OSError:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
 
 def inference(num_gpus, cfg_file, run_name,
               test_data_fn, topk_per_img, threshold_combos, 
@@ -468,6 +519,49 @@ def inference(num_gpus, cfg_file, run_name,
         logger.error(traceback.format_exc())
         raise
 
+def parse_args():
+    """Register CLI arguments and return parsed args."""
+    parser = argparse.ArgumentParser(
+        description='Run inference with multiple threshold combinations'
+    )
+    parser.add_argument('--model_type', type=str, default='standard_30k', choices=list(MAPPER_REGISTRY.keys()),
+                        help='Model type determining which mapper to use: "standard_{30k|all}" (FileNameWCSMapper) or "clip_{30k|all}" (CLIPTestMapper)')
+    parser.add_argument('--data_split', type=str, default='eval', choices=['eval', 'test'],
+                        help='Which data split to use: eval (val_ files) or test (test_ files)')
+    parser.add_argument('--cfgfile', type=str, default=None,
+                        help='Path to the config file (defaults depend on --model_type)')
+    parser.add_argument('--run_name', type=str, default=None,
+                        help='Name of the run directory (defaults depend on --model_type)')
+    parser.add_argument('--test_data_fn', type=str, default=None,
+                        help='Path to the test data file (defaults depend on --model_type)')
+    parser.add_argument('--topk_per_img', type=int, default=2000,
+                        help='Number of top detections to keep per image')
+    # confidence score of detections
+    parser.add_argument('--score_thresholds', nargs='+', type=float, default=[0.4],
+                        help='List of score thresholds to test (e.g., --score_thresholds 0.3 0.4 0.5)')
+    # tldr: Non-Maximum Suppression (NMS) threshold allows you to remove duplicate, overlapping bounding boxes from detections
+    # More precisely, nms_thresh is the overlap cutoff by Intersection over Union (IoU) used during NMS to decide whether to keep or discard a box.
+    # Formally IoU = | Area of Overlap | / | Area of Union | b/w two boxes
+    # So high IoU means boxes are overlapping a lot and low IoU means boxes are mostly separate
+    # How does NMS work? https://waynestalk.com/en/non-maximum-suppression-nms-en/
+    # Step 1) Select the box with highest probability
+    # Step 2) Compare the overlap (IoU) of this box with other boxes
+    # Step 3) Remove bounding boxes with IoU > iou_threshold (what you set nms_thresh to)
+    # Step 4) Then, move to the next box with the highest probability and repeat steps 2-4 until no boxes remain
+    # Basically, NMS iteratively removes lower scoring boxes which have an IoU greater than iou_threshold with another (higher scoring) box.
+    # (For more info: https://detectron2.readthedocs.io/en/latest/modules/layers.html?highlight=nms#detectron2.layers.nms)
+    # So if getting too many duplicate dets per obj --> lower nms_thresh meaning you're stricter about removing overlapping boxes
+    # If getting too few dets per obj (missing objs) --> raise nms_thresh meaning you're more lenient about keeping overlapping boxes
+    parser.add_argument('--nms_thresholds', nargs='+', type=float, default=[0.3],
+                        help='List of NMS thresholds to test (e.g., --nms_thresholds 0.2 0.3 0.4)')
+    parser.add_argument('--no_combo', action='store_true', default=False,
+                        help='Pair score and NMS thresholds by index instead of running the full cartesian product')
+    parser.add_argument('--num_gpus', type=int, default=4,
+                        help='Number of GPUs to use')
+    parser.add_argument('--resume', action='store_true', default=False,
+                        help='Skip threshold combinations whose output .json already exists')
+    return parser, parser.parse_args()
+
 if __name__ == "__main__":
     # config params (os.path.expanduser expands the ~ in our path)
     data_root_dir = os.path.expanduser('~/lsst_data/')
@@ -500,44 +594,7 @@ if __name__ == "__main__":
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_keypoints.json",
         },
     }
-
-    parser = argparse.ArgumentParser(description='Run inference with multiple threshold combinations')
-    parser.add_argument('--model_type', type=str, default='standard_30k', choices=list(MAPPER_REGISTRY.keys()),
-                        help='Model type determining which mapper to use: "standard_{30k|all}" (FileNameWCSMapper) or "clip_{30k|all}" (CLIPTestMapper)')
-    parser.add_argument('--data_split', type=str, default='eval', choices=['eval', 'test'],
-                        help='Which data split to use: eval (val_ files) or test (test_ files)')
-    parser.add_argument('--cfgfile', type=str, default=None,
-                        help='Path to the config file (defaults depend on --model_type)')
-    parser.add_argument('--run_name', type=str, default=None,
-                        help='Name of the run directory (defaults depend on --model_type)')
-    parser.add_argument('--test_data_fn', type=str, default=None,
-                        help='Path to the test data file (defaults depend on --model_type)')
-    parser.add_argument('--topk_per_img', type=int, default=2000,
-                        help='Number of top detections to keep per image')
-    # confidence score of detections
-    parser.add_argument('--score_thresholds', nargs='+', type=float, default=[0.4],
-                        help='List of score thresholds to test (e.g., --score_thresholds 0.3 0.4 0.5)')
-    # tldr: Non-Maximum Suppression (NMS) threshold allows you to remove duplicate, overlapping bounding boxes from detections
-    # More precisely, nms_thresh is the overlap cutoff by Intersection over Union (IoU) used during NMS to decide whether to keep or discard a box.
-    # Formally IoU = | Area of Overlap | / | Area of Union | b/w two boxes
-    # So high IoU means boxes are overlapping a lot and low IoU means boxes are mostly separate
-    # How does NMS work? https://waynestalk.com/en/non-maximum-suppression-nms-en/
-    # Step 1) Select the box with highest probability
-    # Step 2) Compare the overlap (IoU) of this box with other boxes
-    # Step 3) Remove bounding boxes with IoU > iou_threshold (what you set nms_thresh to)
-    # Step 4) Then, move to the next box with the highest probability and repeat steps 2-4 until no boxes remain
-    # Basically, NMS iteratively removes lower scoring boxes which have an IoU greater than iou_threshold with another (higher scoring) box.
-    # (For more info: https://detectron2.readthedocs.io/en/latest/modules/layers.html?highlight=nms#detectron2.layers.nms)
-    # So if getting too many duplicate dets per obj --> lower nms_thresh meaning you're stricter about removing overlapping boxes
-    # If getting too few dets per obj (missing objs) --> raise nms_thresh meaning you're more lenient about keeping overlapping boxes
-    parser.add_argument('--nms_thresholds', nargs='+', type=float, default=[0.3],
-                        help='List of NMS thresholds to test (e.g., --nms_thresholds 0.2 0.3 0.4)')
-    parser.add_argument('--num_gpus', type=int, default=4,
-                        help='Number of GPUs to use')
-    parser.add_argument('--resume', action='store_true', default=False,
-                        help='Skip threshold combinations whose output .json already exists')
-    args = parser.parse_args()
-
+    parser, args = parse_args()
     # Fill in model-type-specific defaults for unspecified arguments
     defaults = MODEL_DEFAULTS[args.model_type]
     if args.cfgfile is None:
@@ -549,17 +606,27 @@ if __name__ == "__main__":
             args.test_data_fn = defaults["eval_data_fn"]
         else:
             args.test_data_fn = defaults["test_data_fn"]
+    try:
+        threshold_combos = build_threshold_combos(
+            args.score_thresholds,
+            args.nms_thresholds,
+            no_combo=args.no_combo,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
-    threshold_combos = list(itertools.product(args.score_thresholds, args.nms_thresholds))
+    threshold_mode = 'index-paired' if args.no_combo else 'full cartesian product'
     print("-"*45)
     print(f"Starting inference with {args.num_gpus} GPUs...")
     print(f"Model type: {args.model_type}")
     print(f"Data split: {args.data_split}")
     print(f"Score thresholds: {args.score_thresholds}")
     print(f"NMS thresholds: {args.nms_thresholds}")
+    print(f"Threshold mode: {threshold_mode}")
     print(f"Total threshold combinations to run: {len(threshold_combos)}")
     print("-"*45)
-    port = 2**15 + 2**14 + hash(os.getuid() if sys.platform != "win32" else 1) % 2**14
+    port = select_dist_port()
+    print(f"Using distributed port: {port}")
     default_dist_url = f"tcp://127.0.0.1:{port}"
     # spawn num_gpus processes, one for each GPU
     launch(
