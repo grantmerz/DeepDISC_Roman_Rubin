@@ -327,7 +327,7 @@ def plot_confusion_matrices(
     for j, key in enumerate(run_combos):
         ax = axes_flat[j]
         pairs = pairs_dict.get(key)
-        label = col_labels[j]
+        label = legend_name_from_panel_label(col_labels[j])
 
         if pairs is None or pairs.empty:
             ax.text(0.5, 0.5, "No data", ha="center", va="center",
@@ -649,7 +649,7 @@ def plot_summary(
         else:
             ax = fig.add_subplot(gs[row_idx, col_idx], sharex=ref_cm_ax, sharey=ref_cm_ax)
         pairs = pairs_dict.get(key)
-        label = col_labels[j]
+        label = legend_name_from_panel_label(col_labels[j])
 
         if pairs is None or pairs.empty:
             ax.text(0.5, 0.5, "No data", ha="center", va="center",
