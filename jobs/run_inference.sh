@@ -72,11 +72,29 @@ case $MODEL_TYPE in
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints.json"
         ;;
+    "clip_30k_emb")
+        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py"
+        RUN_NAME="clip5_30k_4h200_bs192_ep15_lprj"
+        EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints.json"
+        TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints.json"
+        ;;
     "clip_all")
         CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_100k.py"
         RUN_NAME="clip5_all_4h200_bs64_ep20"
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_keypoints.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_keypoints.json"
+        ;;
+    "comb_30k")
+        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_comb_lsst_roman_30k.py"
+        RUN_NAME="comb_30k_4h200_bs144_ep50"
+        EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints_wcs.json"
+        TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints_wcs.json"
+        ;;
+    "distill_30k")
+        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_distill_lsst_roman_30k.py"
+        RUN_NAME="distill_30k_4h200_bs192_ep50"
+        EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints.json"
+        TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints.json"
         ;;
     *)
         echo "Unknown model type: $MODEL_TYPE"
@@ -105,6 +123,7 @@ EXTRA_FLAGS=""
 [[ -n "${CFGFILE:-}" ]]      && EXTRA_FLAGS="$EXTRA_FLAGS --cfgfile ${CFGFILE}"
 [[ "${RESUME:-false}"   == "true" ]] && EXTRA_FLAGS="$EXTRA_FLAGS --resume"
 [[ "${NO_COMBO:-false}" == "true" ]] && EXTRA_FLAGS="$EXTRA_FLAGS --no_combo"
+[[ "${EXTRACT_EMBEDDINGS:-false}" == "true" ]] && EXTRA_FLAGS="$EXTRA_FLAGS --extract_embeddings"
 
 echo "Launching DeepDISC inference job..."
 echo "Model type: ${MODEL_TYPE}"
@@ -116,6 +135,7 @@ echo "Data file: ${DATA_FN}"
 echo "Top K per image: ${TOPK_PER_IMG}"
 echo "Score thresholds: ${SCORE_THRESHOLDS[@]}"
 echo "NMS thresholds: ${NMS_THRESHOLDS[@]}"
+echo "Extract embeddings: ${EXTRACT_EMBEDDINGS:-false}"
 
 ulimit -n 131072
 # Run inference with all threshold combos in a single call.
@@ -125,6 +145,7 @@ python run_inference.py \
     --model_type ${MODEL_TYPE} \
     --run_name "${RUN_NAME}" \
     --data_split ${DATA_SPLIT} \
+    --topk_per_img ${TOPK_PER_IMG} \
     --score_thresholds "${SCORE_THRESHOLDS[@]}" \
     --nms_thresholds "${NMS_THRESHOLDS[@]}" \
     --num_gpus "${NUM_GPUS:-4}" \
