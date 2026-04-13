@@ -6,6 +6,19 @@ set -euo pipefail
 # submit_run_inference.sh -j test_infer_sall --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -t 00:40:00 --model-type standard_all --data-split test --score-thresholds "0.45 0.55" --nms-thresholds "0.65 0.65" --no-combo --dry-run
 # ./jobs/submit_run_inference.sh -j eval_infer_c30k_lgroi -g 2 -p gpuA100x4-interactive -t 00:45:00 --model-type clip_30k --run-name clip5_flatten_30k_4h200_bs64_ep15_resume --score-thresholds "0.45 0.5 0.55 0.6 0.65" --nms-thresholds "0.45 0.5 0.55 0.6 0.65"
 # ./jobs/submit_run_inference.sh -j test_infer_c30k_lgroi --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4-interactive -t 00:25:00 --model-type clip_30k --data-split test --run-name clip5_flatten_30k_4h200_bs64_ep15_resume --score-thresholds "0.4" --nms-thresholds "0.55"
+
+# ./jobs/submit_run_inference.sh -j eval_infer_c30k_comb -g 2 -p gpuA100x4 -m 96G -t 01:30:00 --model-type comb_30k --score-thresholds "0.45 0.5 0.55 0.6 0.65" --nms-thresholds "0.45 0.5 0.55 0.6 0.65" --resume
+# ./jobs/submit_run_inference.sh -j test_infer_c30k_comb --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4 -t 00:35:00 -m 96G --model-type comb_30k --data-split test --score-thresholds "0.4 0.55 0.65" --nms-thresholds "0.55 0.65 0.65" --no-combo
+
+# ./jobs/submit_run_inference.sh -j eval_infer_c30k_distill -g 2 -p gpuA100x4 -t 01:00:00 --model-type distill_30k --score-thresholds "0.45 0.5 0.55 0.6 0.65" --nms-thresholds "0.45 0.5 0.55 0.6 0.65"
+# ./jobs/submit_run_inference.sh -j test_infer_c30k_distill --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4 -t 00:25:00 --model-type distill_30k --data-split test --score-thresholds "0.65" --nms-thresholds "0.65"
+# ./jobs/submit_run_inference.sh -j tinfer_c30k --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4-interactive -t 00:45:00 --data-split test --score-thresholds "0.4" --nms-thresholds "0.55"
+# EMBEDDINGS:
+# ./jobs/submit_run_inference.sh -j tinfer_c30k_emb --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4-interactive -t 00:45:00 --model-type clip_30k_emb --data-split test --score-thresholds "0.4" --nms-thresholds "0.55" --extract-embeddings
+# ./jobs/submit_run_inference.sh -j tinfer_c30k_lgroi_emb15 --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4-interactive -t 00:25:00 --model-type clip_30k_emb --data-split test --run-name clip5_flatten_30k_4h200_bs64_ep15 --cfgfile /u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k_flatten.py --score-thresholds "0.4" --nms-thresholds "0.55" --extract-embeddings
+# ./jobs/submit_run_inference.sh -j tinfer_c30k_lgroi_emb35 --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4-interactive -t 00:30:00 --model-type clip_30k_emb --data-split test --run-name clip5_flatten_30k_4h200_bs64_ep15_resume --cfgfile /u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k_flatten.py --score-thresholds "0.4" --nms-thresholds "0.55" --extract-embeddings
+# ./jobs/submit_run_inference.sh -j tinfer_c30k_og_emb --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4-interactive -t 00:30:00 --model-type clip_30k_emb --data-split test --run-name clip5_30k_4h200_bs64_ep50 --cfgfile /u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k_og.py --score-thresholds "0.4" --nms-thresholds "0.55" --extract-embeddings
+# ./jobs/submit_run_inference.sh -j lprj_tinfer_c30k_emb --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4-interactive -t 00:45:00 --model-type clip_30k_emb --data-split test --score-thresholds "0.4" --nms-thresholds "0.55" --extract-embeddings
 DEFAULT_JOB_SCRIPT="$HOME/jobs/run_inference.sh"
 
 # SLURM defaults (match the #SBATCH defaults in run_inference.sh)
@@ -15,7 +28,7 @@ DEFAULT_ACCOUNT="bdsp-delta-gpu"
 DEFAULT_PARTITION="gpuA100x4"
 DEFAULT_GPUS=4
 DEFAULT_CONSTRAINT="projects,work"
-DEFAULT_EXCLUDE="gpua003"
+DEFAULT_EXCLUDE="gpua003,gpua008"
 DEFAULT_NODES=1
 DEFAULT_NTASKS_PER_NODE=1
 DEFAULT_CPUS_PER_TASK=32
@@ -55,7 +68,7 @@ SLURM Options:
         --mail-type TYPE           Notification events: ALL, BEGIN, END, FAIL (default: $DEFAULT_MAIL_TYPE if --mail-user set)
 
 Inference Options:
-    --model-type TYPE              Model type: standard_30k, standard_all, clip_30k, clip_all (default: $DEFAULT_MODEL_TYPE)
+    --model-type TYPE              Model type: standard_30k, standard_all, clip_30k, clip_30k_emb, clip_all, comb_30k, distill_30k (default: $DEFAULT_MODEL_TYPE)
     --run-name NAME                Override run name (used instead of model-type default)
     --data-split SPLIT             Data split: eval or test (default: $DEFAULT_DATA_SPLIT)
     --cfgfile PATH                 Override config file passed to run_inference.py (optional)
@@ -66,6 +79,7 @@ Inference Options:
     --data-root-dir PATH           Root data directory (default: $DEFAULT_DATA_ROOT_DIR)
     --anns-folder NAME             Annotations subfolder (default: $DEFAULT_ANNS_FOLDER)
     --resume                       Skip threshold combos whose output .json already exists
+    --extract-embeddings           Enable embedding extraction during inference
 
 Misc:
     --dry-run                      Print configuration and sbatch command without submitting
@@ -106,6 +120,7 @@ TOPK="$DEFAULT_TOPK"
 DATA_ROOT_DIR="$DEFAULT_DATA_ROOT_DIR"
 ANNS_FOLDER="$DEFAULT_ANNS_FOLDER"
 RESUME="false"
+EXTRACT_EMBEDDINGS="false"
 DRY_RUN="false"
 
 while [[ $# -gt 0 ]]; do
@@ -136,6 +151,7 @@ while [[ $# -gt 0 ]]; do
         --data-root-dir)        DATA_ROOT_DIR="$2";        shift 2 ;;
         --anns-folder)          ANNS_FOLDER="$2";          shift 2 ;;
         --resume)               RESUME="true";             shift ;;
+        --extract-embeddings)   EXTRACT_EMBEDDINGS="true"; shift ;;
         --dry-run)              DRY_RUN="true";            shift ;;
         -h|--help)              show_usage; exit 0 ;;
         *)
@@ -159,8 +175,8 @@ if [[ ! "$DATA_SPLIT" =~ ^(eval|test)$ ]]; then
     echo "Error: --data-split must be 'eval' or 'test'"
     exit 1
 fi
-if [[ ! "$MODEL_TYPE" =~ ^(standard_30k|standard_all|clip_30k|clip_all)$ ]]; then
-    echo "Error: --model-type must be one of: standard_30k, standard_all, clip_30k, clip_all"
+if [[ ! "$MODEL_TYPE" =~ ^(standard_30k|standard_all|clip_30k|clip_30k_emb|clip_all|comb_30k|distill_30k)$ ]]; then
+    echo "Error: --model-type must be one of: standard_30k, standard_all, clip_30k, clip_30k_emb, clip_all, comb_30k, distill_30k"
     exit 1
 fi
 
@@ -178,6 +194,7 @@ export DATA_ROOT_DIR
 export ANNS_FOLDER
 export NUM_GPUS="$GPUS"
 export RESUME
+export EXTRACT_EMBEDDINGS
 
 # Build sbatch command. CLI options override the #SBATCH directives in the job script
 SBATCH_CMD=(
@@ -212,6 +229,7 @@ echo "  Top-K per image : $TOPK"
 echo "  Data root dir   : $DATA_ROOT_DIR"
 echo "  Anns folder     : $ANNS_FOLDER"
 echo "  Resume          : $RESUME"
+echo "  Extract embeds  : $EXTRACT_EMBEDDINGS"
 echo ""
 echo "SLURM configuration:"
 echo "  Job name        : $JOB_NAME"
