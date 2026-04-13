@@ -193,7 +193,7 @@ def plot_purity_comp_comparison(csv_infos, output_dir, pipeline='dd', linking_le
             ax=ax,
             title=f'{pipeline.upper()} Purity vs Completeness | {info["label"]}'
         )
-
+        ax.tick_params(labelbottom=True, labelleft=True)
     fig.tight_layout()
     out_path = output_dir / f'compare_{pipeline}_purity_vs_completeness.png'
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
