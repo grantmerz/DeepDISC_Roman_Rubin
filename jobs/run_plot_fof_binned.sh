@@ -4,17 +4,17 @@ set -euo pipefail
 # Submit-style wrapper for DeepDISC_Roman_Rubin/plot_fof_binned.py.
 # This mirrors submit_run_fof_classify.sh workflow options and dispatch style,
 # but executes plotting directly (no sbatch) by default.
-# ./submit_plot_fof_binned.sh --run-names "clip5_30k_4h200_bs64_ep50 clip5_flatten_30k_4h200_bs64_ep15_resume" --comparison-pairs "clip5_30k_4h200_bs64_ep50,clip5_flatten_30k_4h200_bs64_ep15_resume" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --dry-run
-# ./submit_plot_fof_binned.sh --run-names "clip5_30k_4h200_bs192_ep15 clip5_flatten_30k_4h200_bs64_ep15" --comparison-pairs "clip5_30k_4h200_bs192_ep15,clip5_flatten_30k_4h200_bs64_ep15" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --only-comparison --dry-run
-# ./submit_plot_fof_binned.sh --run-names "lsst5_30k_4h200_bs192_ep50 clip5_30k_4h200_bs192_ep15" --comparison-pairs "lsst5_30k_4h200_bs192_ep50,clip5_30k_4h200_bs192_ep15" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --only-comparison --dry-run
+# ./run_plot_fof_binned.sh --run-names "clip5_30k_4h200_bs64_ep50 clip5_flatten_30k_4h200_bs64_ep15_resume" --comparison-pairs "clip5_30k_4h200_bs64_ep50,clip5_flatten_30k_4h200_bs64_ep15_resume" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --dry-run
+# ./run_plot_fof_binned.sh --run-names "clip5_30k_4h200_bs192_ep15 clip5_flatten_30k_4h200_bs64_ep15" --comparison-pairs "clip5_30k_4h200_bs192_ep15,clip5_flatten_30k_4h200_bs64_ep15" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --only-comparison --dry-run
+# ./run_plot_fof_binned.sh --run-names "lsst5_30k_4h200_bs192_ep50 clip5_30k_4h200_bs192_ep15" --comparison-pairs "lsst5_30k_4h200_bs192_ep50,clip5_30k_4h200_bs192_ep15" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --only-comparison --dry-run
 
-# ./submit_plot_fof_binned.sh --run-names "lsst5_30k_4h200_bs192_ep50 distill_30k_4h200_bs192_ep50" --comparison-pairs "lsst5_30k_4h200_bs192_ep50,distill_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --only-comparison
-# ./submit_plot_fof_binned.sh --run-names "lsst5_30k_4h200_bs192_ep50 distill_30k_4h200_bs192_ep50" --comparison-pairs "lsst5_30k_4h200_bs192_ep50,distill_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65"
+# ./run_plot_fof_binned.sh --run-names "lsst5_30k_4h200_bs192_ep50 distill_30k_4h200_bs192_ep50" --comparison-pairs "lsst5_30k_4h200_bs192_ep50,distill_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --only-comparison
+# ./run_plot_fof_binned.sh --run-names "lsst5_30k_4h200_bs192_ep50 distill_30k_4h200_bs192_ep50" --comparison-pairs "lsst5_30k_4h200_bs192_ep50,distill_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65"
 # ./jobs/submit_plot_fof_binned.sh --run-names "distill_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65"
 
 # ./jobs/submit_plot_fof_binned.sh --run-names "comb_30k_4h200_bs144_ep50" --dataset-preset test_8k --score-thresholds "0.4 0.55 0.65" --nms-thresholds "0.55 0.65 0.65" --no-default-comparison-pairs
-# ./submit_plot_fof_binned.sh --run-names "lsst5_30k_4h200_bs192_ep50 comb_30k_4h200_bs144_ep50" --comparison-pairs "lsst5_30k_4h200_bs192_ep50,comb_30k_4h200_bs144_ep50" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --only-comparison
-# ./submit_plot_fof_binned.sh --run-names "comb_30k_4h200_bs144_ep50 distill_30k_4h200_bs192_ep50" --comparison-pairs "comb_30k_4h200_bs144_ep50,distill_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65" --only-comparison --buffers "1"
+# ./run_plot_fof_binned.sh --run-names "lsst5_30k_4h200_bs192_ep50 comb_30k_4h200_bs144_ep50" --comparison-pairs "lsst5_30k_4h200_bs192_ep50,comb_30k_4h200_bs144_ep50" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --only-comparison
+# ./run_plot_fof_binned.sh --run-names "comb_30k_4h200_bs144_ep50 distill_30k_4h200_bs192_ep50" --comparison-pairs "comb_30k_4h200_bs144_ep50,distill_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65" --only-comparison --buffers "1"
 
 # ./jobs/submit_plot_fof_binned.sh --run-names "lsst5_30k_4h200_bs192_ep50 clip5_30k_4h200_bs192_ep15_lprj" --comparison-pairs "lsst5_30k_4h200_bs192_ep50,clip5_30k_4h200_bs192_ep15_lprj" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --only-comparison
 # ./jobs/submit_plot_fof_binned.sh --run-names "clip5_30k_4h200_bs192_ep15 clip5_30k_4h200_bs192_ep15_lprj" --comparison-pairs "clip5_30k_4h200_bs192_ep15,clip5_30k_4h200_bs192_ep15_lprj" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --only-comparison
