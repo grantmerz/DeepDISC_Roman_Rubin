@@ -14,6 +14,7 @@ import gc
 import time
 import glob
 import random
+import socket
 import cv2
 import numpy as np
 import pandas as pd
@@ -34,7 +35,7 @@ from detectron2.engine.defaults import create_ddp_model
 from detectron2.checkpoint import DetectionCheckpointer
 
 # DeepDisc imports
-from custom.mappers import FileNameMapper, FileNameWCSMapper, CLIPTestMapper, return_custom_test_loader
+from custom.mappers import FileNameMapper, FileNameWCSMapper, CLIPTestMapper, CLIPTestWithRomanMapper, ResizeCombinedTestMapper, return_custom_test_loader
 from deepdisc.data_format.register_data import register_data_set
 from deepdisc.model.loaders import return_test_loader
 
@@ -43,12 +44,65 @@ MAPPER_REGISTRY = {
     "standard_30k": FileNameWCSMapper,
     "standard_all": FileNameWCSMapper,
     "clip_30k": CLIPTestMapper,
+    "clip_30k_emb": CLIPTestWithRomanMapper,
     "clip_all": CLIPTestMapper,
+    "comb_30k": ResizeCombinedTestMapper,
+    "distill_30k": CLIPTestMapper
 }
+
+def build_threshold_combos(score_thresholds, nms_thresholds, no_combo=False):
+    """Build threshold pairs from the provided score and NMS lists
+    By default this returns the full cartesian product. When ``no_combo`` is
+    enabled, thresholds are paired by index instead, so ``score[i]`` runs with
+    ``nms[i]`` and both lists must have the same length
+    """
+    if no_combo:
+        if len(score_thresholds) != len(nms_thresholds):
+            raise ValueError(
+                "--no_combo requires the same number of score and NMS "
+                "thresholds."
+            )
+        return list(zip(score_thresholds, nms_thresholds))
+    return list(itertools.product(score_thresholds, nms_thresholds))
+
+def select_dist_port() -> int:
+    """Return a per-run distributed port with collision avoidance.
+
+    Priority:
+    1) Respect ``MASTER_PORT`` if provided by the scheduler/launcher.
+    2) Derive a stable per-job candidate from ``SLURM_JOB_ID``.
+    3) Fall back to a random high port.
+    4) If candidate is busy, ask the OS for a free local port.
+    """
+    master_port = os.environ.get("MASTER_PORT")
+    if master_port is not None:
+        try:
+            port = int(master_port)
+            if 1 <= port <= 65535:
+                print(f"Using {port}")
+                return port
+        except ValueError:
+            pass
+
+    job_id = os.environ.get("SLURM_JOB_ID")
+    if job_id and job_id.isdigit():
+        candidate = 15000 + (int(job_id) % 45000)
+    else:
+        candidate = random.SystemRandom().randint(15000, 60000)
+
+    # Probe candidate port on localhost; if unavailable, ask OS for any free port.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", candidate))
+            return candidate
+        except OSError:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
 
 def inference(num_gpus, cfg_file, run_name,
               test_data_fn, topk_per_img, threshold_combos, 
-              model_type, data_split, resume=False):
+              model_type, data_split, resume=False, extract_embeddings=False):
     """
     Main inference function to be launched on each GPU.
     Will be called by detectron2.engine.launch() for each GPU process.
@@ -62,6 +116,7 @@ def inference(num_gpus, cfg_file, run_name,
         model_type: One of "standard_{30k|all}" or "clip_{30k|all}" — selects the test DataLoader mapper
         data_split: Which data split to use: 'eval' or 'test'
         resume: Flag to skip threshold combos whose output .json already exists
+        extract_embeddings: Flag to extract embeddings for the detected objects
     """
     logger = setup_logger()
 
@@ -89,6 +144,7 @@ def inference(num_gpus, cfg_file, run_name,
             logger.info(f"  topk_per_img: {topk_per_img}")
             logger.info(f"  Total threshold combinations: {len(threshold_combos)}")
             logger.info(f"  Resume Toggle: {resume}")
+            logger.info(f"  Extract Embeddings Toggle: {extract_embeddings}")
             for idx, (s, n) in enumerate(threshold_combos, 1):
                 logger.info(f"    {idx}. score={s}, nms={n}")
 
@@ -100,6 +156,9 @@ def inference(num_gpus, cfg_file, run_name,
         cfg.dataloader.test.mapper = MAPPER_REGISTRY[model_type]
         # model params
         cfg.train.init_checkpoint = model_path
+        if "clip" in model_type:
+            cfg.model.extract_embeddings = extract_embeddings
+            
         # register test dataset on ALL processes b/c each GPU needs access to the dataset
         if comm.is_main_process():
             logger.info(f"Registering test dataset from: {test_data_fn}")
@@ -126,8 +185,11 @@ def inference(num_gpus, cfg_file, run_name,
         # additionally, we'll need to set total batch size to be divisible by num_gpus
         # so that each GPU gets an equal share of the test set
         train_bs = cfg.dataloader.train.total_batch_size
-        test_total_bs = 32 * 3 * num_gpus
-        cfg.dataloader.test.total_batch_size = test_total_bs // num_gpus  # higher since no grads
+        test_total_bs = 32 * 3 * num_gpus # 48 per GPU (H200) during training to 96 (H200, A100x4, A40x4 since no grads) during inference
+        if "comb" in model_type:
+            test_total_bs = 36 * 2 * num_gpus  # 36 per GPU (H200) during training to 72 (H200, A100x4, A40x4 since no grads) during inference but request 96G memory since for the combined mapper it does resizing on the fly
+        # and we don't set it to total batch size but batch size per GPU since we feed this value to torch.Dataloader directly which launches a dataloader per GPU 
+        cfg.dataloader.test.total_batch_size = test_total_bs // num_gpus  
         # https://discuss.pytorch.org/t/dataloader-persistent-workers-usage/189329/3
         cfg.dataloader.test.persistent_workers = True  # keep workers alive b/w threshold combos
         cfg.dataloader.test.num_workers = 8  # 16 crashed for bs=96 w/ 4x A100x8
@@ -136,14 +198,25 @@ def inference(num_gpus, cfg_file, run_name,
             logger.info(f"Test Batch size across all GPUs: {test_total_bs}")
             logger.info(f"Test Batch size per GPU: {cfg.dataloader.test.total_batch_size}")
         
-        if "clip" in model_type:
-            imagereader = cfg.dataloader.test.imagereader
-        else:
+        if model_type == "clip_30k_emb":
+            # Paired mapper expects Rubin+Roman paths, so we have to use DualRomanRubinImageReader
+            imagereader = cfg.dataloader.train.imagereader
+        elif "standard" in model_type:
             imagereader = cfg.dataloader.imagereader
-            
-        mapper = cfg.dataloader.test.mapper(
-            imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
-        ).map_data
+        else:
+            # "clip", "comb", "distill"
+            imagereader = cfg.dataloader.test.imagereader
+        
+        if "comb" in model_type:
+            cache_dir = cfg.dataloader.test.cache_dir if data_split == 'eval' else '/work/hdd/bfhm/g4merz/wcs_map_cache/test_8k_keypoints_wcs'
+            mapper = cfg.dataloader.test.mapper(
+                imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs, cache_dir=cache_dir
+            ).map_data
+        else:
+            mapper = cfg.dataloader.test.mapper(
+                imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
+            ).map_data
+        
         test_loader = return_custom_test_loader(cfg, mapper)
         if torch.cuda.is_available():
             cfg.train.device = "cuda"
@@ -154,7 +227,6 @@ def inference(num_gpus, cfg_file, run_name,
             logger.info("Creating model...")
         model = instantiate(cfg.model)
         model.to(cfg.train.device)
-
         # wraps model in DistributedDataParallel if world_size > 1 so that each GPU will have its own copy of the model
         model = create_ddp_model(model)
         if comm.is_main_process():
@@ -200,7 +272,9 @@ def inference(num_gpus, cfg_file, run_name,
                 logger.info(f"Score Threshold: {test_score_thresh}, NMS Threshold: {nms_thresh}")
                 logger.info("="*60)
             # set thresholds in model
-            for box_pred in model.module.roi_heads.box_predictor:
+            # single gpu doesn't have module attribute
+            net = model.module if hasattr(model, "module") else model 
+            for box_pred in net.roi_heads.box_predictor:
                 box_pred.test_topk_per_image = topk_per_img
                 box_pred.test_score_thresh = test_score_thresh
                 box_pred.test_nms_thresh = nms_thresh
@@ -250,11 +324,32 @@ def inference(num_gpus, cfg_file, run_name,
                     total_compute_time += infer_time
                     # pred_dicts.extend(metrics_dict)
                     # total_dets = sum(len(result['instances']) for result in metrics_dict)
-                    pred_instances.extend([r['instances'].to('cpu') for r in metrics_dict])
-                    total_dets = sum(len(r) for r in pred_instances[-len(metrics_dict):])
+                    # pred_instances.extend([r['instances'].to('cpu') for r in metrics_dict])
+                    # instead of keeping the masks in CPU memory, we immediately convert them to RLEs and then drop them to save memrory
+                    for r in metrics_dict:
+                        instances = r['instances'].to('cpu')
+                        pred_masks = instances.pred_masks.numpy()
+                        rle_masks = []
+                        # for m in pred_masks:
+                        #     # pycocotools expects a Fortran-contiguous array of type uint8                            
+                        #     rle = mask_util.encode(np.asfortranarray(m.astype(np.uint8)))
+                        #     # 'counts' field is in bytes, which is not JSON serializable, so we decode it to a string
+                        #     rle['counts'] = rle['counts'].decode('utf-8')
+                        #     rle_masks.append(rle)
+                        if len(pred_masks) > 0:
+                            # pycocotools can support encoding of 3d mask arrays (H, W, N) where N is num of masks, 
+                            # so we can encode all masks at once instead of looping through each mask
+                            # just gotta transpose pred_masks from (N, H, W) to (H, W, N)
+                            rles = mask_util.encode(np.asfortranarray(pred_masks.transpose(1, 2, 0), dtype=np.uint8))
+                            rle_masks = [{'size': rle['size'], 'counts': rle['counts'].decode('utf-8')} for rle in rles]
+                        # drop the huge boolean masks, keep compact RLEs
+                        del pred_masks
+                        instances.remove('pred_masks')
+                        pred_instances.append((instances, rle_masks))
+                    total_dets = sum(len(r) for r, _ in pred_instances[-len(metrics_dict):])
                     total_num_dets += total_dets
                     del batch, metrics_dict
-                    gc.collect()
+                    # gc.collect()
                     # calculate per-image times
                     per_img_infer = infer_time / batch_size
                     per_img_data = data_load_time / batch_size
@@ -396,8 +491,13 @@ def inference(num_gpus, cfg_file, run_name,
                 det_scores = []
                 det_classes = []
                 det_rle_masks = []
+                if extract_embeddings:
+                    det_emb_q = []
+                    det_emb_k = []
+                    has_roman = False
                 # now we save all the detections to a detection catalog
-                for raw_instances, wcs, fn in zip(all_preds, all_wcs, all_fns):
+                for (raw_instances, rle_masks), wcs, fn in zip(all_preds, all_wcs, all_fns):
+                    num_instances = len(raw_instances)
                     w = WCS(wcs)
                     centers_pred = raw_instances.pred_boxes.get_centers().numpy()
                     det_coords = w.pixel_to_world(centers_pred[:,0],centers_pred[:,1])
@@ -413,29 +513,44 @@ def inference(num_gpus, cfg_file, run_name,
                         det_dec_kps.extend(kp_coords.dec.degree)
                     else:
                         # if keypoints aren't predicted
-                        det_ra_kps.extend([None] * len(raw_instances))
-                        det_dec_kps.extend([None] * len(raw_instances))
+                        det_ra_kps.extend([None] * num_instances)
+                        det_dec_kps.extend([None] * num_instances)
                     pred_boxes = raw_instances.pred_boxes.tensor.numpy()
                     pred_scores = raw_instances.scores.numpy()
                     pred_classes = raw_instances.pred_classes.numpy()
-                    pred_masks = raw_instances.pred_masks.numpy()
-                    rle_masks = []
-                    for mask in pred_masks:
-                        # pycocotools expects a Fortran-contiguous array of type uint8
-                        rle = mask_util.encode(np.asfortranarray(mask.astype(np.uint8)))
-                        # 'counts' field is in bytes, which is not JSON serializable, so we decode it to a string
-                        rle['counts'] = rle['counts'].decode('utf-8')
-                        rle_masks.append(rle)
+                    # skip the below since we already have RLEs encoded before
+                    # pred_masks = raw_instances.pred_masks.numpy()
+                    # rle_masks = []
+                    # for mask in pred_masks:
+                    #     # pycocotools expects a Fortran-contiguous array of type uint8
+                    #     rle = mask_util.encode(np.asfortranarray(mask.astype(np.uint8)))
+                    #     # 'counts' field is in bytes, which is not JSON serializable, so we decode it to a string
+                    #     rle['counts'] = rle['counts'].decode('utf-8')
+                    #     rle_masks.append(rle)
+                    # del pred_masks
+                    # raw_instances.remove('pred_masks')  # free up memory since we have the RLEs now
+                    # gc.collect()
                     # rle_masks = mask_util.encode(np.asfortranarray(pred_masks.astype(np.uint8)))
                     # for rle in rle_masks:
                     #     rle['counts'] = rle['counts'].decode('utf-8')
-                    num_instances = len(raw_instances)
                     det_filenames.extend(itertools.repeat(fn, num_instances))
-                    # det_filenames.extend([fn] * len(raw_instances))
+                    # det_filenames.extend([fn] * num_instances)
                     det_boxes.extend(pred_boxes.tolist())
                     det_scores.extend(pred_scores.tolist())
                     det_classes.extend(pred_classes.tolist())
                     det_rle_masks.extend(rle_masks)
+                    if extract_embeddings:
+                        if num_instances == 0:
+                            det_emb_q.append(torch.empty(0, 128)) # 128 set in config file as model.roi_heads.contrastive_dim
+                            det_emb_k.append(torch.empty(0, 128))
+                        else:
+                            det_emb_q.append(raw_instances.pred_embeddings_q)
+                            if raw_instances.has('pred_embeddings_k'):
+                                has_roman = True
+                                det_emb_k.append(raw_instances.pred_embeddings_k)
+                            else:
+                                det_emb_k.append(torch.empty(num_instances, 128))
+                                
                 logger.info(f"Lengths of det catalog fields: {len(det_ras)}, {len(det_decs)}, {len(det_ra_kps)}, {len(det_dec_kps)}, {len(det_filenames)}, {len(det_boxes)}, {len(det_scores)}, {len(det_classes)}, {len(det_rle_masks)}")
                 assert len(det_ras) == len(det_decs) == len(det_ra_kps) == len(det_dec_kps) == len(det_filenames) == len(det_boxes) == len(det_scores) == len(det_classes) == len(det_rle_masks), "Mismatch in lengths of det catalog fields!"
                 dd_det_cat = {
@@ -457,6 +572,25 @@ def inference(num_gpus, cfg_file, run_name,
                     json.dump(dd_det_cat, f, indent=2)
                 # pd.DataFrame(dd_det_cat).to_json(output_file)
                 logger.info(f"Detection catalog saved to: {output_file}.")
+                if extract_embeddings:
+                    all_emb_q = torch.cat(det_emb_q, dim=0)
+                    assert len(all_emb_q) == len(det_ras), f"Embedding count {len(all_emb_q)} != detection count ({len(det_ras)})"
+                    embeddings = {
+                        'file_name': det_filenames,
+                        'emb_q': all_emb_q, # (total dets, 128) L2-normalized z_q
+                    }
+                    if has_roman:
+                        all_emb_k = torch.cat(det_emb_k, dim=0)
+                        assert len(all_emb_k) == len(det_ras), f"Embedding count {len(all_emb_k)} != detection count ({len(det_ras)})"
+                        logger.info("Roman embeddings found and concatenated successfully")
+                        embeddings['emb_k'] = all_emb_k # (total dets, 128) L2-normalized z_k
+                    
+                    emb_output_dir = f'{run_dir}/preds/{data_split}/det_embeddings'
+                    os.makedirs(emb_output_dir, exist_ok=True)
+                    emb_output_file = os.path.join(emb_output_dir, f'emb_s{test_score_thresh}_n{nms_thresh}.pt')
+                    torch.save(embeddings, emb_output_file)
+                    logger.info(f"Embeddings (z_q shape: {all_emb_q.shape}) saved to: {emb_output_file}.")
+                
                 logger.info(f"Completed combination {combo_idx}/{len(threshold_combos)}")
 
             # sync all processes before moving to next combination
@@ -468,40 +602,11 @@ def inference(num_gpus, cfg_file, run_name,
         logger.error(traceback.format_exc())
         raise
 
-if __name__ == "__main__":
-    # config params (os.path.expanduser expands the ~ in our path)
-    data_root_dir = os.path.expanduser('~/lsst_data/')
-    anns_folder = 'annotations_lvl5'
-
-    # Per-model-type defaults (used when --cfgfile / --run_name / --test_data_fn are not supplied)
-    MODEL_DEFAULTS = {
-        "standard_30k": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_lsst_30k.py",
-            "run_name":     "lsst5_30k_4h200_bs192_ep50",
-            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
-            "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
-        },
-        "standard_all": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_lsst_100k.py",
-            "run_name":     "lsst5_all_4h200_bs192_ep20",
-            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
-            "test_data_fn": f"{data_root_dir}{anns_folder}/test_keypoints.json",
-        },
-        "clip_30k": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py",
-            "run_name":     "clip5_30k_4h200_bs64_ep50",
-            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
-            "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
-        },
-        "clip_all": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_100k.py",
-            "run_name":     "clip5_all_4h200_bs64_ep20",
-            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
-            "test_data_fn": f"{data_root_dir}{anns_folder}/test_keypoints.json",
-        },
-    }
-
-    parser = argparse.ArgumentParser(description='Run inference with multiple threshold combinations')
+def parse_args():
+    """Register CLI arguments and return parsed args."""
+    parser = argparse.ArgumentParser(
+        description='Run inference with multiple threshold combinations'
+    )
     parser.add_argument('--model_type', type=str, default='standard_30k', choices=list(MAPPER_REGISTRY.keys()),
                         help='Model type determining which mapper to use: "standard_{30k|all}" (FileNameWCSMapper) or "clip_{30k|all}" (CLIPTestMapper)')
     parser.add_argument('--data_split', type=str, default='eval', choices=['eval', 'test'],
@@ -532,12 +637,67 @@ if __name__ == "__main__":
     # If getting too few dets per obj (missing objs) --> raise nms_thresh meaning you're more lenient about keeping overlapping boxes
     parser.add_argument('--nms_thresholds', nargs='+', type=float, default=[0.3],
                         help='List of NMS thresholds to test (e.g., --nms_thresholds 0.2 0.3 0.4)')
+    parser.add_argument('--no_combo', action='store_true', default=False,
+                        help='Pair score and NMS thresholds by index instead of running the full cartesian product')
     parser.add_argument('--num_gpus', type=int, default=4,
                         help='Number of GPUs to use')
     parser.add_argument('--resume', action='store_true', default=False,
                         help='Skip threshold combinations whose output .json already exists')
-    args = parser.parse_args()
+    parser.add_argument('--extract_embeddings', action='store_true', default=False,
+                        help='Extract embeddings for the detected objects')
+    return parser, parser.parse_args()
 
+if __name__ == "__main__":
+    # config params (os.path.expanduser expands the ~ in our path)
+    data_root_dir = os.path.expanduser('~/lsst_data/')
+    anns_folder = 'annotations_lvl5'
+
+    # Per-model-type defaults (used when --cfgfile / --run_name / --test_data_fn are not supplied)
+    MODEL_DEFAULTS = {
+        "standard_30k": {
+            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_lsst_30k.py",
+            "run_name":     "lsst5_30k_4h200_bs192_ep50",
+            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
+        },
+        "standard_all": {
+            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_lsst_100k.py",
+            "run_name":     "lsst5_all_4h200_bs192_ep20",
+            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/test_keypoints.json",
+        },
+        "clip_30k": {
+            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py",
+            "run_name":     "clip5_30k_4h200_bs64_ep50",
+            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
+        },
+        "clip_30k_emb": {
+            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py",
+            "run_name":     "clip5_30k_4h200_bs192_ep15_lprj",
+            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
+        },
+        "clip_all": {
+            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_100k.py",
+            "run_name":     "clip5_all_4h200_bs64_ep20",
+            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/test_keypoints.json",
+        },
+        "comb_30k": {
+            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_comb_lsst_roman_30k.py",
+            "run_name":     "comb_30k_4h200_bs144_ep50",
+            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints_wcs.json",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints_wcs.json",
+        },
+        "distill_30k": {
+            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_distill_lsst_roman_30k.py",
+            "run_name":     "distill_30k_4h200_bs192_ep50",
+            "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
+            "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
+        }
+    }
+    parser, args = parse_args()
     # Fill in model-type-specific defaults for unspecified arguments
     defaults = MODEL_DEFAULTS[args.model_type]
     if args.cfgfile is None:
@@ -549,17 +709,27 @@ if __name__ == "__main__":
             args.test_data_fn = defaults["eval_data_fn"]
         else:
             args.test_data_fn = defaults["test_data_fn"]
+    try:
+        threshold_combos = build_threshold_combos(
+            args.score_thresholds,
+            args.nms_thresholds,
+            no_combo=args.no_combo,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
-    threshold_combos = list(itertools.product(args.score_thresholds, args.nms_thresholds))
+    threshold_mode = 'index-paired' if args.no_combo else 'full cartesian product'
     print("-"*45)
     print(f"Starting inference with {args.num_gpus} GPUs...")
     print(f"Model type: {args.model_type}")
     print(f"Data split: {args.data_split}")
     print(f"Score thresholds: {args.score_thresholds}")
     print(f"NMS thresholds: {args.nms_thresholds}")
+    print(f"Threshold mode: {threshold_mode}")
     print(f"Total threshold combinations to run: {len(threshold_combos)}")
     print("-"*45)
-    port = 2**15 + 2**14 + hash(os.getuid() if sys.platform != "win32" else 1) % 2**14
+    port = select_dist_port()
+    print(f"Using distributed port: {port}")
     default_dist_url = f"tcp://127.0.0.1:{port}"
     # spawn num_gpus processes, one for each GPU
     launch(
@@ -570,7 +740,7 @@ if __name__ == "__main__":
         dist_url=default_dist_url,
         args=(args.num_gpus, args.cfgfile, args.run_name,
               args.test_data_fn, args.topk_per_img, threshold_combos, 
-              args.model_type, args.data_split, args.resume),
+              args.model_type, args.data_split, args.resume, args.extract_embeddings),
     )
     if torch.cuda.is_available():
         torch.cuda.empty_cache()

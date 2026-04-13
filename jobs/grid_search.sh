@@ -10,7 +10,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=32G
 #SBATCH --time=00:25:00
-#SBATCH --array=0-2
+#SBATCH --array=1-2
 #SBATCH --mail-user=yse2@illinois.edu
 #SBATCH --mail-type=ALL
 
@@ -34,6 +34,16 @@ python grid_search.py \
     --output ~/lsst_runs/lsst5_30k_4h200_bs192_ep50/metrics/gold_buf${BUFFER}/gs_metrics.csv \
     --mag-limit gold \
     --buffer $BUFFER
+
+# python grid_search.py \
+#     --run-dir ~/lsst_runs/comb_30k_4h200_bs144_ep50 \
+#     --test-cats-dir ~/lsst_data/test_cats_lvl5/val_4k/ \
+#     --output ~/lsst_runs/comb_30k_4h200_bs144_ep50/metrics/gold_buf${BUFFER}/gs_metrics.csv \
+#     --mag-limit gold \
+#     --buffer $BUFFER \
+#     --score-thresholds 0.45 0.5 0.55 0.6 0.65 \
+#     --nms-thresholds 0.45 0.5 0.55 0.6 0.65
+
 
 echo "## Job Array Task ID: $SLURM_ARRAY_TASK_ID finished."
 echo "## Finished: $(date)"

@@ -26,8 +26,8 @@ from pathlib import Path
 # ============================================================================
 # Style constants
 # ============================================================================
-PIPELINE_COLORS = {'dd': 'tab:blue', 'lsst': 'tab:orange'}
-LL_STYLES = {'1.0': '-', '2.0': '--', '0.5': ':'}
+PIPELINE_COLORS = {'dd': 'tab:blue', 'lsst': 'tab:green'}
+LL_STYLES = {'1.0': '-', '2.0': '--'}
 
 TRUTH_SCENARIO_COLORS = {
     'matched_isolated':       '#2ecc71',
@@ -135,10 +135,10 @@ def plot_heatmap(df, col, ax=None, title=None, cmap=None,
                 val = pivot.iloc[i, j]
                 if np.isnan(val):
                     continue
-                frac = (val - eff_vmin) / (eff_vmax - eff_vmin + 1e-9)
-                color = 'white' if frac > 0.6 else 'black'
                 ax.text(j, i, f'{val:{fmt}}', ha='center', va='center',
-                        fontsize=7, color=color)
+                        fontsize=7, color='black',
+                        bbox=dict(facecolor='white', edgecolor='none', 
+                                  alpha=0.7, pad=2, boxstyle='round,pad=0.3'))
 
     if title:
         ax.set_title(title, fontsize=11)
@@ -199,9 +199,9 @@ def plot_heatmap_comparison(dfs, labels, col, output_path=None, title=None,
         _, _, im = plot_heatmap(df, col, ax=ax, title=label, cmap=cmap,
                                 vmin=vmin, vmax=vmax, annotate=(n <= 4))
         last_im = im
+        ax.tick_params(labelbottom=True, labelleft=True)
         if idx > 0:
             ax.set_ylabel('')
-            ax.set_yticklabels([])
 
     if last_im is not None:
         fig.subplots_adjust(right=0.88)
