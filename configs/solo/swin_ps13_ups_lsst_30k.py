@@ -37,7 +37,8 @@ from ..custom.poolers import NonPowerOf2ROIPooler, CustomLastLevelMaxPool
 
 # Overrides of the template COCO config
 # This is the cascade mask rcnn of an ImageNet-swin_base_patch4_window7_224_21k model
-train.init_checkpoint = "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl"
+# train.init_checkpoint = "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl"
+train.init_checkpoint = "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model_ps13.pkl"
 # for TimedLazyAstroTrainer (all in iters)
 train.timing_report_period = steps_per_epoch // 2 # report every n iters (for testing, 5)
 train.timing_rolling_window_size = steps_per_epoch // 2 # average over last n iters (for testing, 5)

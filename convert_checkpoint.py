@@ -1,7 +1,7 @@
 import argparse, re, os
 import pickle as pkl
 
-def convert_checkpoint(input_path, output_path, same_patch_size=False):
+def convert_checkpoint(input_path, output_path, same_patch_size=False, single_backbone=False):
     """
     Convert a standard single-backbone Detectron2 Swin checkpoint into the
     dual-backbone format required by GeneralizedRCNNMultimodal (CLIP training)
@@ -22,6 +22,18 @@ def convert_checkpoint(input_path, output_path, same_patch_size=False):
         Do NOT use this flag for Roman-Rubin training. Roman uses patch_size=13
         while Rubin uses patch_size=4, which changes the minimum FPN stride and
         therefore the FPN layer numbering (see FPN shift section below)
+    
+    --- Single-backbone ps13 mode (--single-backbone) ---
+    We need to produce:
+        backbone.*  (same prefix, but FPN lateral/output keys shifted +1)
+    
+    With ps4, int(log2(stride)) maps:
+        strides [4, 8, 16, 32]  ->  fpn_lateral[2, 3, 4, 5]
+    With ps13, int(log2(stride)) maps:
+        strides [13, 26, 52, 104]  ->  fpn_lateral[3, 4, 5, 6]
+    The same Swin stage feeds the same backbone channels into each lateral;
+    only the name index shifts by +1.
+    
     """
     print(f"Loading checkpoint from {input_path}...")
     with open(input_path, "rb") as f:
@@ -40,60 +52,84 @@ def convert_checkpoint(input_path, output_path, same_patch_size=False):
     
     if same_patch_size:
         print("  [Mode] Same patch size for both encoders: copying backbone_k keys directly (no FPN shift)")
+    elif single_backbone:
+        print("  [Mode] Single backbone (ps13): FPN layers will be shifted +1 for backbone")
     else:
         print("  [Mode] Different patch sizes (e.g. Roman patch_size=13 vs Rubin patch_size=4): FPN layers will be shifted +1 for backbone_k")
 
     # Regex to capture FPN layer numbers (e.g., fpn_lateral2 -> 2)
     # Only used when same_patch_size=False (Roman key encoder)
     fpn_pattern = re.compile(r"(fpn_(?:lateral|output))(\d+)")
-
-    for k, v in state_dict.items():
-        # Backbone -> Query and Key Encoders
-        if "backbone" in k:
-            # Query backbone keys --> direct copy, key names just swap "backbone." -> "backbone_q."
-            q_key = k.replace("backbone.", "backbone_q.")
-            new_state_dict[q_key] = v
-            # Key/Momentum backbone keys --> rename "backbone." -> "backbone_k.", with optional FPN shift
-            k_key = k.replace("backbone.", "backbone_k.")
-            if same_patch_size:
-                # Both encoders share the same patch_size so FPN stride/naming is identical
-                # Copy backbone_k keys directly
-                # For patch_embed, the shapes for backbone_k.bottom_up.patch_embed may still NOT match
-                # if the two encoders have different numbers of input channels
-                # compared to the OG pre-trained checkpoint (e.g., 6ch Rubin vs 3ch RGB)
-                # Detectron2 will safely SKIP loading these mismatched keys and it's fine 
-                # patch_embed gets trained from scratch for the new modality anyway
-                new_state_dict[k_key] = v  
-                print(f"  Backbone key: {k} -> {q_key} and {k_key}")
-            else:
-                # FOR ROMAN, WE GOTTA SHIFT FPN LAYERS
-                # Because stride increased (Rubin 4-> Roman 13),
-                #   Rubin  stride 4  (= 2^2) -> fpn_lateral2, fpn_output2
-                #   Roman  stride 13 (~ 2^3.7) -> fpn_lateral3, fpn_output3
-                # we shift FPN index +1 when copying to backbone_k
-                match = fpn_pattern.search(k_key) # is this an FPN layer that needs shifting?
+    
+    if single_backbone:
+        print("  [Mode] Single-backbone ps13: shifting backbone.fpn_lateral/output keys +1")
+        for k, v in state_dict.items():
+            if "backbone" in k:
+                match = fpn_pattern.search(k) # is this an FPN layer that needs shifting?
                 if match:
-                # lateral2 -> lateral3, output2 -> output3, etc.
-                    base_name = match.group(1) # e.g. fpn_lateral
-                    layer_idx = int(match.group(2)) # e.g. 2
+                    base_name = match.group(1)
+                    layer_idx = int(match.group(2))
                     new_layer_name = f"{base_name}{layer_idx + 1}"
-                    k_key_shifted = k_key.replace(match.group(0), new_layer_name)
-                    new_state_dict[k_key_shifted] = v
-                    print(f"  [Shift] {k} -> {k_key_shifted}")
+                    new_key = k.replace(match.group(0), new_layer_name)
+                    new_state_dict[new_key] = v
+                    print(f"  [Shift] {k} -> {new_key}")
                 else:
-                    # Standard backbone layers (patch_embed, blocks, norms) - no shift needed
-                    # patch_embed will still skip loading due to shape diffs
-                    # and it's fine since patch_embed gets trained from scratch anyway
+                    new_state_dict[k] = v
+                    print(f"  Keeping key: {k}")
+            else:
+                new_state_dict[k] = v
+                print(f"  Keeping key: {k}")
+    else:
+        for k, v in state_dict.items():
+            # Backbone -> Query and Key Encoders
+            if "backbone" in k:
+                # Query backbone keys --> direct copy, key names just swap "backbone." -> "backbone_q."
+                q_key = k.replace("backbone.", "backbone_q.")
+                new_state_dict[q_key] = v
+                # Key/Momentum backbone keys --> rename "backbone." -> "backbone_k.", with optional FPN shift
+                k_key = k.replace("backbone.", "backbone_k.")
+                if same_patch_size:
+                    # Both encoders share the same patch_size so FPN stride/naming is identical
+                    # Copy backbone_k keys directly
+                    # For patch_embed, the shapes for backbone_k.bottom_up.patch_embed may still NOT match
+                    # if the two encoders have different numbers of input channels
+                    # compared to the OG pre-trained checkpoint (e.g., 6ch Rubin vs 3ch RGB)
+                    # Detectron2 will safely SKIP loading these mismatched keys and it's fine 
+                    # patch_embed gets trained from scratch for the new modality anyway
                     new_state_dict[k_key] = v  
                     print(f"  Backbone key: {k} -> {q_key} and {k_key}")
-        # keep everything else (like RPN, anchors, etc.)
-        else:
-            # If shapes don't match your config, 
-            # Detectron2 will warn and random init.
-            new_state_dict[k] = v
-            print(f"  Keeping key: {k}")
+                else:
+                    # FOR ROMAN, WE GOTTA SHIFT FPN LAYERS
+                    # Because stride increased (Rubin 4-> Roman 13),
+                    #   Rubin  stride 4  (= 2^2) -> fpn_lateral2, fpn_output2
+                    #   Roman  stride 13 (~ 2^3.7) -> fpn_lateral3, fpn_output3
+                    # we shift FPN index +1 when copying to backbone_k
+                    match = fpn_pattern.search(k_key) # is this an FPN layer that needs shifting?
+                    if match:
+                    # lateral2 -> lateral3, output2 -> output3, etc.
+                        base_name = match.group(1) # e.g. fpn_lateral
+                        layer_idx = int(match.group(2)) # e.g. 2
+                        new_layer_name = f"{base_name}{layer_idx + 1}"
+                        k_key_shifted = k_key.replace(match.group(0), new_layer_name)
+                        new_state_dict[k_key_shifted] = v
+                        print(f"  [Shift] {k} -> {k_key_shifted}")
+                    else:
+                        # Standard backbone layers (patch_embed, blocks, norms) - no shift needed
+                        # patch_embed will still skip loading due to shape diffs
+                        # and it's fine since patch_embed gets trained from scratch anyway
+                        new_state_dict[k_key] = v  
+                        print(f"  Backbone key: {k} -> {q_key} and {k_key}")
+            # keep everything else (like RPN, anchors, etc.)
+            else:
+                # If shapes don't match your config, 
+                # Detectron2 will warn and random init.
+                new_state_dict[k] = v
+                print(f"  Keeping key: {k}")
     # wrap it back up if it was wrapped originally
-    author_tag = "Converted for CLIP (same patch size)" if same_patch_size else "Converted for CLIP (Roman-Rubin)"
+    if single_backbone:
+        author_tag = "Converted for single-backbone ps13 (FPN keys shifted +1)"
+    else:
+        author_tag = "Converted for CLIP (same patch size)" if same_patch_size else "Converted for CLIP (Roman-Rubin)"
     if wrapper:
         output_checkpoint = {"model": new_state_dict, "__author__": author_tag}
     else:
@@ -112,6 +148,8 @@ if __name__ == "__main__":
                                     python convert_checkpoint.py --input cascade_mask_rcnn_swin_b_in21k_model.pkl --output cascade_mask_rcnn_swin_b_in21k_clip_roman_rubin_model.pkl
                                     # Rubin-Rubin CLIP (same patch sizes, no FPN shift):
                                     python convert_checkpoint.py --input cascade_mask_rcnn_swin_b_in21k_model.pkl --output cascade_mask_rcnn_swin_b_in21k_clip_rubin_rubin_model.pkl --same-patch-size
+                                    # Single-backbone ps13 (FPN shift only, no dual-backbone split):
+                                    python convert_checkpoint.py --input cascade_mask_rcnn_swin_b_in21k_model.pkl --output cascade_mask_rcnn_swin_b_in21k_model_ps13.pkl --single-backbone
                                     """
                                     )
     parser.add_argument("--input", required=True, help="Path to input .pkl checkpoint")
@@ -124,8 +162,17 @@ if __name__ == "__main__":
             "FPN layer indices must be shifted by +1 for the key encoder"
         )
     )
+    parser.add_argument(
+        "--single-backbone", action="store_true",
+        help=(
+            "Produce a single-backbone ps13 checkpoint: keeps backbone.* prefix but shifts "
+            "all fpn_lateral/fpn_output keys by +1 to match the ps13 FPN level numbering. "
+            "Use this to initialize single-backbone ps13 training from a ps4 pretrained model."
+        )
+    )
     args = parser.parse_args()
-    convert_checkpoint(args.input, args.output, same_patch_size=args.same_patch_size)
+    convert_checkpoint(args.input, args.output, same_patch_size=args.same_patch_size, single_backbone=args.single_backbone)
 
 # "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl"
 # "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_clip_roman_rubin_model.pkl"
+# python convert_checkpoint.py --input /projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl --output /projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model_ps13.pkl --single-backbone
