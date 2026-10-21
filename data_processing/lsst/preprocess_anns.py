@@ -76,13 +76,14 @@ def clean_metadata_of_bad_roman(all_metadata_path, clean_metadata_path, integrit
     print(f"Saved cleaned metadata to {clean_metadata_path}")
     return clean_metadata_path
 
-def split_and_save_data(metadata_path, output_dir, train_ratio=0.7, val_ratio=0.1):
+def split_and_save_data(metadata_path, output_dir, train_ratio=0.7, val_ratio=0.1, seed=42):
     """Shuffles, splits, and saves the data into train, validation, and test sets."""
     print("Splitting data into train, validation, and test sets...")
-    
+
     with open(metadata_path, 'r') as f:
         all_data = json.load(f)
-    
+
+    random.seed(seed)
     random.shuffle(all_data)
     total_size = len(all_data)
     train_size = int(total_size * train_ratio)
@@ -131,6 +132,7 @@ def generate_plots(output_dir, snr_lvl, band):
     plt.hist(train_objs, bins=10, color='blue', alpha=0.5, label=f'Training Set ({sum(train_objs)})')
     plt.hist(val_objs, bins=10, color='green', alpha=0.5, label=f'Validation Set ({sum(val_objs)})')
     plt.hist(test_objs, bins=10, color='orange', alpha=0.5, label=f'Test Set ({sum(test_objs)})')
+    plt.yscale('log')
     plt.xlabel('Number of Objs')
     plt.ylabel('Number of Images')
     plt.title(f'Histogram of Objects per Image - Lvl {snr_lvl}')
@@ -170,6 +172,7 @@ def generate_plots(output_dir, snr_lvl, band):
             ax.axvline(mean_val, color='green', linestyle='--', linewidth=2, label=f'Mean: {mean_val:.2f}')
             ax.axvline(max_val, color='red', linestyle='--', linewidth=2, label=f'Max: {max_val:.2f}')
         ax.set_xlabel(r'mag $i$')
+        ax.set_yscale('log')
         ax.set_ylabel('Number of Objs')
         if title:
             ax.set_title(title)
@@ -259,11 +262,13 @@ def main():
                         help='If set, generate and save summary plots.')
     parser.add_argument('--band', type=str, default='i',
                         help='Band to use for the magnitude distribution plots.')
-    parser.add_argument('--integrity_report', type=str, 
+    parser.add_argument('--integrity_report', type=str,
                         default='/u/yse2/roman_cutout_integrity_report.json',
                         help='Path to the Roman cutout integrity report JSON file.')
-    
-    
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed used to shuffle data before splitting.')
+
+
     args = parser.parse_args()
 
     annotations_dir = os.path.join(args.root_dir, f'annotations_lvl{args.snr_lvl}/')
@@ -287,7 +292,7 @@ def main():
     train_path = os.path.join(annotations_dir, 'train.json')
     if not os.path.exists(train_path):
         print("STEP 3: Splitting data into train/val/test")
-        split_and_save_data(clean_metadata_path, annotations_dir)
+        split_and_save_data(clean_metadata_path, annotations_dir, seed=args.seed)
     else:
         print(f"Train/Val/Test splits already exist in: {annotations_dir}")
     # generate plots if requested
