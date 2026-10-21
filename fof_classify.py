@@ -33,8 +33,8 @@ from astropy.table import Table
 ALL_FLAG_COLS = [
     'is_matched', 'sep_dist', 'matched_id',
     'is_spurious', 'is_shred', 'is_shredded',
-    'is_missed', 'is_blended_away', 'is_unrec_blend', 'is_part_of_blend',
-    'is_resolved_blend', 'is_partial_deblend'
+    'is_missed', 'is_part_of_blend', 'is_resolved_blend',
+    'is_absorbed', 'is_absorber', 'is_survivor'
 ]
 
 # ============================================================================
@@ -96,8 +96,8 @@ def build_table(results_df, cats, col_config):
             print(f"Didn't recognize catalog key: {cat_key}, skipping...")
             continue
         subset = results_df[results_df['catalog_key'] == cat_key].copy()
-        # # FoFCatalogMatching can return row_index as object dtype;
-        # # coerce to int so the merge key matches the source catalog's index
+        # FoFCatalogMatching can return row_index as object dtype;
+        # coerce to int so the merge key matches the source catalog's index
         # subset['row_index'] = subset['row_index'].astype(int)
         source_cat = cats[cat_key]
         config = col_config.get(cat_key, {})
@@ -120,6 +120,37 @@ def build_table(results_df, cats, col_config):
     final_df = pd.concat(chunks, axis=0).reset_index(drop=True)
     return final_df
 
+def add_sig_blend_flag(df, det_prefix, dmag_sig,
+                       truth_key='lsst_truth', mag_col='mag_i'):
+    """
+    Per-pipeline significant-blend flag over the connected truths of a blend.
+
+    {p}_is_part_of_blend on truth rows == connected (>=1 edge to a detection)
+    AND in a group with >=2 connected truths, i.e. the Stage 2 blend population.
+
+    Significant := gap between the two brightest such truths < dmag_sig
+    (equivalently: the brightest has a companion within dmag_sig of it).
+    Non-blend groups get dmag12 = NaN, and NaN < dmag_sig is False.
+
+    Broadcast to every row in the group, so detection rows carry it too.
+    Run AFTER classify_stage2.
+    """
+    if mag_col not in df.columns:
+        raise KeyError(f"{mag_col!r} not in frame; add it to the {truth_key} col config.")
+    out = df.copy()
+    p = det_prefix
+    # truth guard is load-bearing: is_part_of_blend is also set on connected dets
+    blend_truth = (out['catalog_key'] == truth_key) & out[f'{p}_is_part_of_blend']
+
+    def _dmag12(s):
+        v = np.sort(s.dropna().to_numpy())
+        return v[1] - v[0] if v.size >= 2 else np.nan
+
+    out[f'{p}_dmag12'] = (
+        out[mag_col].where(blend_truth).groupby(out['group_id']).transform(_dmag12)
+    )
+    out[f'{p}_is_sig_blend'] = out[f'{p}_dmag12'] < dmag_sig
+    return out
 
 # ============================================================================
 # Stage 1: Count-Based Classification
@@ -290,7 +321,7 @@ def classify_group_stage2(n_det, n_truth, matched_pairs, adj):
 
     Group-level blend flags are derived from the adjacency graph,
     NOT from FOF group membership. A truth with zero edges is simply
-    "missed" and does not make nearby detections into "unrec blends".
+    "missed" and does not make nearby detections into "absorbers".
 
     Parameters
     ----------
@@ -310,22 +341,20 @@ def classify_group_stage2(n_det, n_truth, matched_pairs, adj):
         'sep_dist': np.full(n_det, np.nan),
         'is_spurious': np.zeros(n_det, dtype=bool),
         'is_shred': np.zeros(n_det, dtype=bool),
-        'is_unrec_blend': np.zeros(n_det, dtype=bool),
         'is_part_of_blend': np.zeros(n_det, dtype=bool),
         'is_resolved_blend': np.zeros(n_det, dtype=bool),
-        'is_partial_deblend': np.zeros(n_det, dtype=bool),
+        'is_absorber': np.zeros(n_det, dtype=bool)
     }
     truth_r = {
         'is_matched': np.zeros(n_truth, dtype=bool),
         'matched_id_local': np.full(n_truth, -1, dtype=int),
         'sep_dist': np.full(n_truth, np.nan),
         'is_missed': np.zeros(n_truth, dtype=bool),
-        'is_blended_away': np.zeros(n_truth, dtype=bool),
+        'is_absorbed': np.zeros(n_truth, dtype=bool),
         'is_shredded': np.zeros(n_truth, dtype=bool),
-        'is_unrec_blend': np.zeros(n_truth, dtype=bool),
         'is_part_of_blend': np.zeros(n_truth, dtype=bool),
         'is_resolved_blend': np.zeros(n_truth, dtype=bool),
-        'is_partial_deblend': np.zeros(n_truth, dtype=bool),
+        'is_survivor': np.zeros(n_truth, dtype=bool)
     }
 
     # --- Record matched pairs ---
@@ -364,15 +393,28 @@ def classify_group_stage2(n_det, n_truth, matched_pairs, adj):
     for ti in range(n_truth):
         total_edges = int(edge_counts_per_truth[ti])
         unmatched_edges = int(unmatched_edge_counts[ti]) if len(unmatched_adj) > 0 else 0
-        if ti not in matched_truth_set:
-            if total_edges == 0: # if this unmatched truth has zero edges to any det, it's simply missed
-                truth_r['is_missed'][ti] = True
-            if unmatched_edges >= 1: # if this unmatched truth has 1+ edges from unmatched dets, it's shredded
-                truth_r['is_shredded'][ti] = True
-        else:
-            # Matched truth is shredded if 1+ unmatched dets also pile on it
-            if unmatched_edges >= 1:
-                truth_r['is_shredded'][ti] = True
+        if ti not in matched_truth_set and total_edges == 0: # if this unmatched truth has zero edges to any det, it's simply missed
+            truth_r['is_missed'][ti] = True
+        # Matched truth is shredded if 1+ unmatched dets also pile on it
+        if unmatched_edges >= 1: # if this unmatched truth has 1+ edges from unmatched dets, it's shredded 
+            # Maximality: an unmatched truth cannot share an edge with an unmatched det,
+            # so any truth with unmatched-det edges is necessarily matched.
+            assert ti in matched_truth_set, (
+                f"non-maximal matching: unmatched truth {ti} has "
+                f"{unmatched_edges} edges from unmatched detections"
+            )
+            truth_r['is_shredded'][ti] = True
+        # if ti not in matched_truth_set:
+        #     if total_edges == 0:
+        #         truth_r['is_missed'][ti] = True
+        #     # unreachable under any maximal matching (bc no unmatched det 
+        #     # can share a valid edge w/ an unmatched truth)
+        #     # Kept for non-maximal matchers, e.g. a future degree/friend cap or early-exit assignment
+        #     if unmatched_edges >= 1: # if this unmatched truth has 1+ edges from unmatched dets, it's shredded
+        #         truth_r['is_shredded'][ti] = True
+        # else:
+        #     if unmatched_edges >= 1:
+        #         truth_r['is_shredded'][ti] = True
 
     # --- Group-level blend flags (adj-based) ---
     # connected_truths: truths with at least one detection edge within match_rad
@@ -388,7 +430,6 @@ def classify_group_stage2(n_det, n_truth, matched_pairs, adj):
     fully_resolved = is_real_blend and (n_unmatched_connected == 0) and (n_matched == n_connected)
     
     has_unrec_blend = is_real_blend and (n_unmatched_connected > 0)
-    has_partial_deblend = has_unrec_blend and (n_matched > 0)
 
     connected_dets = [di for di in range(n_det) if adj[di, :].any()] if is_real_blend else []
 
@@ -408,19 +449,22 @@ def classify_group_stage2(n_det, n_truth, matched_pairs, adj):
 
     # Unrecognized blend: at least one truth was absorbed
     if has_unrec_blend:
-        for di in connected_dets:
-            det_r['is_unrec_blend'][di] = True
-        for ti in connected_truths:
-            truth_r['is_unrec_blend'][ti] = True
         for ti in unmatched_connected_truths:
-            truth_r['is_blended_away'][ti] = True
-
-    # Partial deblend: strict subset of unrec_blend where some progress was made
-    if has_partial_deblend:
-        for di in connected_dets:
-            det_r['is_partial_deblend'][di] = True
-        for ti in connected_truths:
-            truth_r['is_partial_deblend'][ti] = True
+            truth_r['is_absorbed'][ti] = True
+        for ti in (connected_truths & matched_truth_set):
+            truth_r['is_survivor'][ti] = True
+        # is_absorber: dets touching an absorbed truth (which one ate it)
+        absorbed_truths = list(unmatched_connected_truths)
+        dets_adj_to_absorbed = [di for di in range(n_det)
+                                if adj[di, absorbed_truths].any()]
+        for di in dets_adj_to_absorbed:
+            # maximality: a det adjacent to an absorbed (unmatched) truth must
+            # itself be matched, else the matching should've paired them
+            assert di in matched_det_set, (
+                f"non-maximal matching: det {di} adjacent to absorbed truth "
+                f"but is unmatched"
+            )
+            det_r['is_absorber'][di] = True
 
     return det_r, truth_r
 
@@ -663,10 +707,9 @@ def classify_stage2(analysis_df, counts_df, det_prefix,
                     flags['sep_dist'][iloc_pos] = det_r['sep_dist'][local_i]
                     flags['is_spurious'][iloc_pos] = det_r['is_spurious'][local_i]
                     flags['is_shred'][iloc_pos] = det_r['is_shred'][local_i]
-                    flags['is_unrec_blend'][iloc_pos] = det_r['is_unrec_blend'][local_i]
                     flags['is_part_of_blend'][iloc_pos] = det_r['is_part_of_blend'][local_i]
                     flags['is_resolved_blend'][iloc_pos] = det_r['is_resolved_blend'][local_i]
-                    flags['is_partial_deblend'][iloc_pos] = det_r['is_partial_deblend'][local_i]
+                    flags['is_absorber'][iloc_pos] = det_r['is_absorber'][local_i]
 
                 for local_j, iloc_pos in enumerate(truth_ilocs):
                     flags['is_matched'][iloc_pos] = truth_r['is_matched'][local_j]
@@ -675,12 +718,11 @@ def classify_stage2(analysis_df, counts_df, det_prefix,
                         flags['matched_id'][iloc_pos] = det_rowids[mid]
                     flags['sep_dist'][iloc_pos] = truth_r['sep_dist'][local_j]
                     flags['is_missed'][iloc_pos] = truth_r['is_missed'][local_j]
-                    flags['is_blended_away'][iloc_pos] = truth_r['is_blended_away'][local_j]
+                    flags['is_absorbed'][iloc_pos] = truth_r['is_absorbed'][local_j]
                     flags['is_shredded'][iloc_pos] = truth_r['is_shredded'][local_j]
-                    flags['is_unrec_blend'][iloc_pos] = truth_r['is_unrec_blend'][local_j]
                     flags['is_part_of_blend'][iloc_pos] = truth_r['is_part_of_blend'][local_j]
                     flags['is_resolved_blend'][iloc_pos] = truth_r['is_resolved_blend'][local_j]
-                    flags['is_partial_deblend'][iloc_pos] = truth_r['is_partial_deblend'][local_j]
+                    flags['is_survivor'][iloc_pos] = truth_r['is_survivor'][local_j]
 
     if verbose:
         print(f"[Stage 2 {prefix.upper()}] Done: {n_isolated:,} isolated, "
@@ -701,25 +743,29 @@ def stage2_summary(analysis_df, det_prefix):
     """Print Stage 2 classification summary for one pipeline."""
     prefix = det_prefix
     det_cat_key = 'dd_det' if det_prefix == 'dd' else 'lsst_det'
+    sig_col = f'{prefix}_is_sig_blend'
+    pob_col = f'{prefix}_is_part_of_blend'
 
     dets = analysis_df[analysis_df['catalog_key'] == det_cat_key]
     truths = analysis_df[analysis_df['catalog_key'] == 'lsst_truth']
+    det_sig = (dets[sig_col] & dets[pob_col]).sum() if sig_col in dets.columns else 0
+    truth_sig = (truths[sig_col] & truths[pob_col]).sum() if sig_col in truths.columns else 0
 
     print(f"\n=== Stage 2 Summary for {det_prefix.upper()} ===")
     print(f"Total detections: {len(dets):,}")
     print(f"  Matched:          {dets[f'{prefix}_is_matched'].sum():,}")
     print(f"  Spurious:         {dets[f'{prefix}_is_spurious'].sum():,}")
     print(f"  Shreds:           {dets[f'{prefix}_is_shred'].sum():,}")
-    print(f"  Unrec blend:      {dets[f'{prefix}_is_unrec_blend'].sum():,}")
+    print(f"  Absorbers:        {dets[f'{prefix}_is_absorber'].sum():,}")
     print(f"  Resolved blend:   {dets[f'{prefix}_is_resolved_blend'].sum():,}")
-    print(f"  Partial deblend:  {dets[f'{prefix}_is_partial_deblend'].sum():,}")
+    print(f"  Sig blend dets:        {det_sig:,}")
     print()
     print(f"Total truth objects: {len(truths):,}")
     print(f"  Matched:          {truths[f'{prefix}_is_matched'].sum():,}")
     print(f"  Missed:           {truths[f'{prefix}_is_missed'].sum():,}")
-    print(f"  Blended away:     {truths[f'{prefix}_is_blended_away'].sum():,}")
+    print(f"  Absorbed:     {truths[f'{prefix}_is_absorbed'].sum():,}")
     print(f"  Shredded:         {truths[f'{prefix}_is_shredded'].sum():,}")
-    print(f"  Unrec blend:      {truths[f'{prefix}_is_unrec_blend'].sum():,}")
     print(f"  Resolved blend:   {truths[f'{prefix}_is_resolved_blend'].sum():,}")
-    print(f"  Partial deblend:  {truths[f'{prefix}_is_partial_deblend'].sum():,}")
+    print(f"  Survivor:         {truths[f'{prefix}_is_survivor'].sum():,}")
+    print(f"  Sig blend components:       {truth_sig:,}")
     print()

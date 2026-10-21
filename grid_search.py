@@ -1,257 +1,202 @@
 """
-grid_search.py — Grid search over score/NMS thresholds for various metrics
+grid_search.py — blend_metrics grid search over score/NMS thresholds.
 
-Runs FOF + Stage 1/2 classification for every (score_thresh, nms_thresh) combo,
-computes scalar metrics, and saves results to a CSV for later plotting/analysis
+For one run, one mag-limit, one buffer: sweep the score x NMS grid. For every
+combo, run FOF + Stage 1/2 + significance fully in memory, compute all 12
+blend_metrics metrics for DeepDISC and the fixed LSST reference, append one
+wide CSV row, then discard the classified table. No parquets are written.
 
 Usage:
     python grid_search.py \
         --run-dir ~/lsst_runs/lsst5_30k_4h200_bs192_ep50 \
         --test-cats-dir ~/lsst_data/test_cats_lvl5/val_4k/ \
-        --output ~/lsst_runs/lsst5_30k_4h200_bs192_ep50/metrics/gold_buf0/gs_metrics.csv \
+        --output ~/lsst_runs/lsst5_30k_4h200_bs192_ep50/metrics/gold_buf2/gs_metrics.csv \
         --mag-limit gold \
-        --buffer 0
+        --buffer 2
 
     # Background with logging:
     python grid_search.py [args] > gs_out.txt 2>&1 &
 """
 
 import argparse
-import json
-import os
 import itertools
+import os
 import time
 import warnings
-
-import numpy as np
-import pandas as pd
-from multiprocessing import Lock, Pool
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
+from multiprocessing import Lock, Pool
 
-from metrics import compute_scalar_metrics
+import pandas as pd
+
+import blend_metrics as bm
 from fof_classify import (
     find_matches, build_table, get_stage1_counts,
-    classify_stg1, classify_stage2
+    classify_stg1, classify_stage2, add_sig_blend_flag,
 )
+
 warnings.filterwarnings('ignore')
-file_lock = Lock()
-MAG_LIMITS = {
-    'power_law': 26.22,
-    'gold': 25.3,
-    'nominal': 26.42,
-}
-# ============================================================================
-# Helper functions for CSV output
-# ============================================================================
-# CSV column definitions
-FRACTION_METRICS = [
-    'completeness', 'purity', 'f1',
-    'blend_loss_frac',
-    'unrec_blend_frac_total', 'unrec_blend_frac_blended',
-    'unrec_blend_det_frac_total', 'unrec_blend_det_frac_blended',
-    'resolved_rate',
-    'shred_frac', 'shred_det_frac',
-    'spurious_frac', 'missed_frac',
-]
-COUNT_METRICS = ['n_truth', 'n_det', 'n_matched_truth', 'n_matched_det']
 
-def metrics_to_csv_row(score_thresh, nms_thresh, all_metrics, elapsed,
-                       pipelines=('dd',), linking_lengths=('1.0', '2.0'),
-                       include_counts=False):
-    """
-    Format a single CSV row from the metrics dictionaries.
+file_lock = Lock()   # module-level; shared with workers via fork inheritance (see below)
 
-    Parameters
-    ----------
-    all_metrics : dict
-        {(prefix, ll_str): metrics_dict} as returned by compute_grid_metrics.
-    """
-    metrics_list = FRACTION_METRICS + (COUNT_METRICS if include_counts else [])
-    parts = [f'{score_thresh}', f'{nms_thresh}']
-    for prefix in pipelines:
-        for ll in linking_lengths:
-            m = all_metrics.get((prefix, ll), {})
-            for metric_name in metrics_list:
-                val = m.get(metric_name, np.nan)
-                if isinstance(val, (int, np.integer)):
-                    parts.append(f'{val}')
-                else:
-                    parts.append(f'{val:.6f}')
-    parts.append(f'{elapsed:.2f}')
-    return ','.join(parts) + '\n'
+METRICS = list(bm.METRIC_NUMDEN) + ['f1']   # 12, in this order
+COUNTS = ['N_t', 'N_t_matched', 'N_t_missed', 'N_t_abs_all', 'N_t_sig',
+          'N_t_res', 'N_t_surv', 'N_t_abs', 'N_t_shredded',
+          'N_d', 'N_d_matched', 'N_d_spurious', 'N_d_shred', 'N_d_abr',
+          'n_det_nan_mag', 'f_det_nan_mag']   # only if --include-counts
 
-def csv_header(pipelines=('dd',), linking_lengths=('1.0', '2.0'),
-               include_counts=False):
-    """Return the CSV header line (with newline)."""
-    cols = ['score_thresh', 'nms_thresh']
-    metrics = FRACTION_METRICS + (COUNT_METRICS if include_counts else [])
-    for prefix in pipelines:
-        for ll in linking_lengths:
-            for m in metrics:
-                cols.append(f'{prefix}_{m}_{ll}')
-    cols.append('elapsed_sec')
-    return ','.join(cols) + '\n'
 
 # ============================================================================
 # Column config
 # ============================================================================
-
 def get_col_config():
-    """Return the column config dict for build_table()
-    Since we're not saving any intermediate outputs, 
-    we literally just need to give RA and DEC from each catalog 
-    to fof_classify.py
-    """
-    return {
-        'dd_det': {
-            'ra': 'ra',
-            'dec': 'dec'
-        },
-        'lsst_det': {
-            'ra': 'ra',
-            'dec': 'dec'
-        },
-        'lsst_truth': {
-            'ra': 'ra',
-            'dec': 'dec'
-        }
-    }
+    """blend_metrics only ever touches group_id, catalog_key, row_index, ra,
+    dec, mag_i, so pulling only those three source columns keeps per-worker
+    memory low across 165 combos."""
+    cols = {'ra': 'ra', 'dec': 'dec', 'mag_i': 'mag_i'}
+    return {'dd_det': dict(cols), 'lsst_det': dict(cols), 'lsst_truth': dict(cols)}
+
+# ============================================================================
+# CSV schema
+# ============================================================================
+def _pipelines(skip_lsst):
+    return ('dd',) if skip_lsst else ('dd', 'lsst')
+
+
+def csv_header(lls, include_counts, skip_lsst):
+    pipelines = _pipelines(skip_lsst)
+    ll_strs = [str(ll) for ll in lls]
+    cols = ['score_thresh', 'nms_thresh']
+    for prefix in pipelines:
+        for ll in ll_strs:
+            for metric in METRICS:
+                cols.append(f'{prefix}_{metric}_{ll}')
+    if include_counts:
+        for prefix in pipelines:
+            for ll in ll_strs:
+                for count in COUNTS:
+                    cols.append(f'{prefix}_{count}_{ll}')
+    cols.append('elapsed_sec')
+    return ','.join(cols) + '\n'
+
+
+def format_row(score, nms, results, lls, include_counts, skip_lsst, elapsed):
+    pipelines = _pipelines(skip_lsst)
+    ll_strs = [str(ll) for ll in lls]
+    parts = [f'{score}', f'{nms}']
+    for prefix in pipelines:
+        for ll in ll_strs:
+            m, _ = results[(prefix, ll)]
+            for metric in METRICS:
+                parts.append(f'{m[metric]:.6f}')
+    if include_counts:
+        for prefix in pipelines:
+            for ll in ll_strs:
+                _, c = results[(prefix, ll)]
+                for count in COUNTS:
+                    parts.append(f'{c[count]:.6f}' if count.startswith('f_') else f'{c[count]}')
+    parts.append(f'{elapsed:.2f}')
+    return ','.join(parts) + '\n'
+
+# ============================================================================
+# Core: classify one pipeline at one linking length
+# ============================================================================
+def classify_and_metrics(cats, det_prefix, ll, m_cut, dmag_sig, match_rad, col_config):
+    mr = ll if match_rad is None else match_rad
+    det_key = 'dd_det' if det_prefix == 'dd' else 'lsst_det'
+    det_col = 'n_dd' if det_prefix == 'dd' else 'n_lsst'
+
+    results_df = find_matches(cats, linking_length=ll, max_friends=None).to_pandas()
+    analysis_df = build_table(results_df, cats, col_config)
+
+    counts = get_stage1_counts(
+        analysis_df, expected_keys=[det_key, 'lsst_truth'],
+        rename_map={'lsst_truth': 'n_truth', det_key: det_col})
+    counts = classify_stg1(counts, prefix=det_prefix,
+                           det_col_name=det_col, truth_col_name='n_truth')
+
+    analysis_df = classify_stage2(analysis_df, counts, det_prefix=det_prefix,
+                                  match_rad=mr, verbose=False)
+    analysis_df = add_sig_blend_flag(analysis_df, det_prefix, dmag_sig=dmag_sig)
+
+    truths, dets = bm.split_truth_det(analysis_df, det_prefix)
+    bm.assert_maximality(truths, dets, det_prefix)          # before compute_counts
+    mt = truths[bm.MAG_COL] < m_cut
+    md = dets[bm.MAG_COL] < m_cut
+    c = bm.compute_counts(truths, dets, det_prefix, mt, md)  # asserts 1-3 run here
+    m = bm.compute_metrics(c)                                # 11 ratios + f1
+    return m, c
 
 
 # ============================================================================
-# LSST pre-computation (run once)
+# LSST precompute (once per buffer, all linking lengths)
 # ============================================================================
-def compute_lsst_metrics(lsst_det_cat, truth_cat, col_config,
-                         linking_lengths):
-    """
-    Pre-compute LSST metrics for all linking lengths.
-    Since LSST catalogs are constant across all DD thresholds,
-    we only need to run this once.
+def compute_lsst(lsst_det, truth, col_config, lls, m_cut, dmag_sig, match_rad):
+    out = {}
+    for ll in lls:
+        cats = {'lsst_det': lsst_det, 'lsst_truth': truth}
+        out[str(ll)] = classify_and_metrics(cats, 'lsst', ll, m_cut,
+                                             dmag_sig, match_rad, col_config)
+    return out   # {ll_str: (metrics, counts)}
 
-    Returns
-    -------
-    dict : {linking_length_str: metrics_dict}
-    """
-    cats = {
-        'lsst_det': lsst_det_cat,
-        'lsst_truth': truth_cat,
-    }
-    lsst_results = {}
-    for ll in linking_lengths:
-        ll_str = str(ll)
-        print(f"  LSST FOF for linking length {ll_str}\"...")
-        fof_result = find_matches(cats, linking_length=ll, max_friends=None)
-        results_df = fof_result.to_pandas()
-        analysis_df = build_table(results_df, cats, col_config)
-        counts = get_stage1_counts(
-            analysis_df,
-            expected_keys=['lsst_det', 'lsst_truth'],
-            rename_map={'lsst_truth': 'n_truth', 'lsst_det': 'n_lsst'}
-        )
-        counts = classify_stg1(counts, prefix='lsst',
-                               det_col_name='n_lsst', truth_col_name='n_truth')
-        analysis_df = classify_stage2(analysis_df, counts, det_prefix='lsst', match_rad=ll / 2, verbose=False)
-        metrics = compute_scalar_metrics(analysis_df, 'lsst')
-        lsst_results[ll_str] = metrics
-        print(f"    Comp={metrics['completeness']:.4f}, "
-              f"Purity={metrics['purity']:.4f}, "
-              f"F1={metrics['f1']:.4f}")
-    return lsst_results
 
 # ============================================================================
 # Per-combo worker
 # ============================================================================
-def process_single_combo(score_thresh, nms_thresh, truth_cat,
-                         run_dir, output_file, col_config, lsst_results,
-                         linking_lengths):
-    """Process a single (score_thresh, nms_thresh) combination."""
-    try:
-        start_time = time.time()
-        if run_dir == '/u/yse2/lsst_runs/lsst5_30k_4h200_bs192_ep50':
-            pred_fn = os.path.join(run_dir, 'preds', 'eval', 'with_mags',
-                            f'pred_s{score_thresh}_n{nms_thresh}.json')
-        else:
-            pred_fn = os.path.join(run_dir, 'preds', 'eval',
-                            f'pred_s{score_thresh}_n{nms_thresh}.json')
-        if not os.path.exists(pred_fn):
-            print(f"WARNING: File not found: {pred_fn}", flush=True)
-            return None
-
-        dd_det_cat = pd.read_json(pred_fn)
-        dd_det_cat = dd_det_cat.rename(columns={'ra_kp': 'ra', 'dec_kp': 'dec'})
-        cats = {
-            'dd_det': dd_det_cat,
-            'lsst_truth': truth_cat,
-        }
-
-        ll_strs = [str(ll) for ll in linking_lengths]
-        results = {}
-        for ll in linking_lengths:
-            ll_str = str(ll)
-            print(f"  s={score_thresh}, n={nms_thresh} | LL={ll_str}\"...", flush=True)
-            results_df = find_matches(
-                cats, linking_length=ll, max_friends=None
-            ).to_pandas()
-            analysis_df = build_table(results_df, cats, col_config)
-            counts = get_stage1_counts(
-                analysis_df,
-                expected_keys=['dd_det', 'lsst_truth'],
-                rename_map={'lsst_truth': 'n_truth', 'dd_det': 'n_dd'}
-            )
-            counts = classify_stg1(counts, prefix='dd',
-                                   det_col_name='n_dd', truth_col_name='n_truth')
-            analysis_df = classify_stage2(analysis_df, counts, det_prefix='dd', match_rad=ll / 2, verbose=False)
-            metrics = compute_scalar_metrics(analysis_df, 'dd')
-            results[('dd', ll_str)] = metrics
-            results[('lsst', ll_str)] = lsst_results[ll_str]
-
-        elapsed = time.time() - start_time
-
-        # Write CSV row (thread-safe)
-        with file_lock:
-            with open(output_file, 'a') as f:
-                f.write(metrics_to_csv_row(
-                    score_thresh, nms_thresh, results, elapsed,
-                    pipelines=('dd', 'lsst'), linking_lengths=tuple(ll_strs)
-                ))
-
-        # Log summary
-        parts = [f"DONE: s={score_thresh}, n={nms_thresh}"]
-        for ll_str in ll_strs:
-            dd_c = results[('dd', ll_str)]['completeness']
-            lsst_c = results[('lsst', ll_str)]['completeness']
-            parts.append(f"DD({ll_str}\")={dd_c:.4f}")
-            parts.append(f"LSST({ll_str}\")={lsst_c:.4f}")
-        parts.append(f"{elapsed:.1f}s")
-        print(" | ".join(parts), flush=True)
-        return results
-    except Exception as e:
-        print(f"ERROR processing s={score_thresh}, n={nms_thresh}: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+def process_combo(score, nms, truth, run_dir, preds_dir, output_file, col_config,
+                  lsst_results, lls, m_cut, dmag_sig, match_rad,
+                  include_counts, skip_lsst):
+    t0 = time.time()
+    tag = bm.combo_tag(score, nms)                       # 's{score}_n{nms}'
+    pred_fn = os.path.join(run_dir, 'preds', preds_dir, f'pred_{tag}.json')
+    if not os.path.exists(pred_fn):
+        print(f'WARNING: missing pred file, skipping: {pred_fn}', flush=True)
         return None
+
+    dd = pd.read_json(pred_fn).rename(columns={'ra_kp': 'ra', 'dec_kp': 'dec'})
+    if bm.MAG_COL not in dd.columns:                     # mag_i presence check
+        print(f'WARNING: {bm.MAG_COL} absent in {pred_fn}, skipping combo', flush=True)
+        return None
+
+    cats = {'dd_det': dd, 'lsst_truth': truth}
+    results = {}
+    for ll in lls:
+        results[('dd', str(ll))] = classify_and_metrics(
+            cats, 'dd', ll, m_cut, dmag_sig, match_rad, col_config)
+        if not skip_lsst:
+            results[('lsst', str(ll))] = lsst_results[str(ll)]
+
+    row = format_row(score, nms, results, lls, include_counts, skip_lsst,
+                     elapsed=time.time() - t0)
+    with file_lock:
+        with open(output_file, 'a') as f:
+            f.write(row)
+    print(f'DONE: s={score}, n={nms} ({time.time() - t0:.1f}s)', flush=True)
+    return results
+
+
+
 
 # ============================================================================
 # CLI
 # ============================================================================
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Grid search over score/NMS thresholds for various metrics'
+        description='Grid search over score/NMS thresholds using blend_metrics.'
     )
     parser.add_argument('--run-dir', required=True,
                         help='Path to the run directory (e.g. ~/lsst_runs/run_name/)')
     parser.add_argument('--test-cats-dir', required=True,
                         help='Path to test catalogs directory')
     parser.add_argument('--output', required=True,
-                        help='Output CSV path (e.g. ~/lsst_runs/run_name/metrics/gold_buf1/val_gs_metrics.csv)')
-    parser.add_argument('--mag-limit', default='gold', choices=MAG_LIMITS.keys(),
+                        help='Output CSV path')
+    parser.add_argument('--mag-limit', default='gold', choices=list(bm.MAG_LIMITS.keys()),
                         help='Magnitude limit key (default: gold)')
-    parser.add_argument('--buffer', type=int, default=1, choices=[0, 1, 2],
-                        help='Buffer to add to mag limit (default: 1)')
+    parser.add_argument('--buffer', type=int, default=2, choices=[0, 1, 2],
+                        help='Buffer added to mag limit to select the truth catalog '
+                             '(default: 2). Never enters the mag cut itself.')
     parser.add_argument('--linking-lengths', nargs='+', type=float,
-                        default=[1.0, 2.0],
-                        help='FOF linking lengths in arcseconds (default: 1.0 2.0)')
+                        default=[0.5, 1.0],
+                        help='FOF linking lengths in arcseconds (default: 0.5 1.0)')
     parser.add_argument('--score-thresholds', nargs='+', type=float,
                         default=[0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                                  0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9],
@@ -260,103 +205,121 @@ def parse_args():
                         default=[0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                                  0.55, 0.6, 0.65, 0.7, 0.75],
                         help='NMS thresholds to search')
+    parser.add_argument('--preds-dir', default='eval',
+                        help='Subdirectory under preds/ containing DD prediction files')
+    parser.add_argument('--match-rad', type=float, default=None,
+                        help='Stage 2 matching radius in arcseconds. '
+                             'Default: use each linking length value')
+    parser.add_argument('--dmag-sig', type=float, default=2.0,
+                        help='Significant-blend magnitude gap threshold (default: 2.0)')
     parser.add_argument('--workers', type=int, default=None,
-                        help='Number of parallel workers (default: min(num_cpus / 2, n_combos))')
+                        help='Number of parallel workers '
+                             '(default: min(num_cpus // 2, n_combos))')
+    parser.add_argument('--include-counts', action='store_true',
+                        help='Also write raw N_* counts per pipeline/ll to the CSV')
+    parser.add_argument('--skip-lsst', action='store_true',
+                        help='Skip the LSST reference pipeline (DD columns only)')
     return parser.parse_args()
+
 
 def main():
     args = parse_args()
     run_dir = os.path.expanduser(args.run_dir)
     test_cats_dir = os.path.expanduser(args.test_cats_dir)
-    truth_mag_limit = MAG_LIMITS[args.mag_limit] + args.buffer
     output_file = os.path.expanduser(args.output)
-    linking_lengths = args.linking_lengths
+    output_dir = os.path.dirname(output_file)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
 
-    threshold_combos = list(itertools.product(
-        args.score_thresholds, args.nms_thresholds
-    ))
-    cpu_count = len(os.sched_getaffinity(0))
-    n_workers = args.workers or min(cpu_count // 2, len(threshold_combos))
+    m_cut = bm.MAG_LIMITS[args.mag_limit]
+    truth_mag_limit = m_cut + args.buffer
 
-    print("=" * 80)
-    print("GRID SEARCH FOR OPTIMAL DETECTION COMPLETENESS")
-    print("=" * 80)
-    print(f"\nConfiguration:")
-    print(f"  Run directory:    {run_dir}")
-    print(f"  Test cats dir:    {test_cats_dir}")
-    print(f"  Mag limit:        {args.mag_limit} ({MAG_LIMITS[args.mag_limit]}) "
-          f"+ buffer {args.buffer} = {truth_mag_limit:.2f}")
-    print(f"  Linking lengths:  {linking_lengths}")
-    print(f"  Output file:      {output_file}")
-    print(f"  Score thresholds: {len(args.score_thresholds)} values")
-    print(f"  NMS thresholds:   {len(args.nms_thresholds)} values")
-    print(f"  Total combos:     {len(threshold_combos)}")
-    print(f"  CPUs available:   {cpu_count}")
-    print(f"  Workers:          {n_workers}")
-
-    # --- Load catalogs ---
-    print(f"\nLoading shared catalogs...")
-    truth_fn = os.path.join(test_cats_dir, f'test_truth_cat_maglim_{truth_mag_limit:.2f}.parquet')
-    print(f"  Truth catalog: {truth_fn}")
-    lsst_truth_cat = pd.read_parquet(truth_fn)
-    print(f"    {len(lsst_truth_cat):,} truth objects")
-
+    truth_fn = os.path.join(test_cats_dir,
+                            f'test_truth_cat_maglim_{truth_mag_limit:.2f}.parquet')
     lsst_det_fn = os.path.join(test_cats_dir, 'test_det_cat.json')
-    print(f"  LSST detections: {lsst_det_fn}")
-    lsst_det_cat = pd.read_json(lsst_det_fn)
-    print(f"    {len(lsst_det_cat):,} LSST detections")
+
+    combos = list(itertools.product(args.score_thresholds, args.nms_thresholds))
+    cpu_count = len(os.sched_getaffinity(0))
+    n_workers = args.workers or min(cpu_count // 2, len(combos))
+
+    print('=' * 80)
+    print('GRID SEARCH — blend_metrics')
+    print('=' * 80)
+    print('\nConfiguration:')
+    print(f'  Run directory:    {run_dir}')
+    print(f'  Test cats dir:    {test_cats_dir}')
+    print(f'  Mag limit:        {args.mag_limit} ({m_cut}); buffer {args.buffer} '
+          f'-> truth cat maglim {truth_mag_limit:.2f}')
+    print(f'  Linking lengths:  {args.linking_lengths}')
+    print(f'  Match radius:     {args.match_rad if args.match_rad is not None else "per-linking-length"}')
+    print(f'  dmag_sig:         {args.dmag_sig}')
+    print(f'  Output file:      {output_file}')
+    print(f'  Score thresholds: {len(args.score_thresholds)} values')
+    print(f'  NMS thresholds:   {len(args.nms_thresholds)} values')
+    print(f'  Total combos:     {len(combos)}')
+    print(f'  Include counts:   {args.include_counts}')
+    print(f'  Skip LSST:        {args.skip_lsst}')
+    print(f'  CPUs available:   {cpu_count}')
+    print(f'  Workers:          {n_workers}')
+
+    print(f'\nLoading truth catalog: {truth_fn}')
+    truth_cat = pd.read_parquet(truth_fn)
+    print(f'  {len(truth_cat):,} truth objects')
+
+    lsst_det_cat = None
+    if not args.skip_lsst:
+        print(f'Loading LSST detections: {lsst_det_fn}')
+        lsst_det_cat = pd.read_json(lsst_det_fn)
+        print(f'  {len(lsst_det_cat):,} LSST detections')
 
     col_config = get_col_config()
 
-    # --- Pre-compute LSST metrics ---
-    print(f"\nPre-computing LSST metrics (run once, reuse for all "
-          f"{len(threshold_combos)} combos)...")
-    lsst_start = time.time()
-    lsst_results = compute_lsst_metrics(
-        lsst_det_cat, lsst_truth_cat, col_config, linking_lengths
-    )
-    print(f"LSST pre-computation done in {time.time() - lsst_start:.1f}s")
+    lsst_results = {}
+    if not args.skip_lsst:
+        print(f'\nPre-computing LSST metrics for {len(args.linking_lengths)} '
+              f'linking length(s)...')
+        t0 = time.time()
+        lsst_results = compute_lsst(lsst_det_cat, truth_cat, col_config,
+                                    args.linking_lengths, m_cut, args.dmag_sig,
+                                    args.match_rad)
+        print(f'LSST pre-computation done in {time.time() - t0:.1f}s')
 
-    # --- Write CSV header ---
-    ll_strs = tuple(str(ll) for ll in linking_lengths)
     with open(output_file, 'w') as f:
-        f.write(csv_header(
-            pipelines=('dd', 'lsst'), linking_lengths=ll_strs
-        ))
+        f.write(csv_header(args.linking_lengths, args.include_counts, args.skip_lsst))
 
-    # --- Run grid search ---
-    print(f"\n{'=' * 80}")
-    print("Starting grid search...")
-    print(f"{'=' * 80}\n")
+    print(f'\n{"=" * 80}')
+    print('Starting grid search...')
+    print(f'{"=" * 80}\n')
 
-    start_time = time.time()
     process_func = partial(
-        process_single_combo,
-        truth_cat=lsst_truth_cat,
+        process_combo,
+        truth=truth_cat,
         run_dir=run_dir,
+        preds_dir=args.preds_dir,
         output_file=output_file,
         col_config=col_config,
         lsst_results=lsst_results,
-        linking_lengths=linking_lengths
+        lls=args.linking_lengths,
+        m_cut=m_cut,
+        dmag_sig=args.dmag_sig,
+        match_rad=args.match_rad,
+        include_counts=args.include_counts,
+        skip_lsst=args.skip_lsst,
     )
-    print(f"Using {n_workers} parallel workers\n")
+
+    t0 = time.time()
     with Pool(processes=n_workers) as pool:
-        results = pool.starmap(process_func, threshold_combos)
-    # with ProcessPoolExecutor(max_workers=n_workers) as executor:
-    #     score_vals = [score for score, _ in threshold_combos]
-    #     nms_vals = [nms for _, nms in threshold_combos]
-    #     results = list(executor.map(process_func, score_vals, nms_vals))
+        results = pool.starmap(process_func, combos)
     results = [r for r in results if r is not None]
+    total_time = time.time() - t0
 
-    total_time = time.time() - start_time
+    print(f'\n{"=" * 80}')
+    print('Grid search complete!')
+    print(f'{"=" * 80}')
+    print(f'Successful combinations: {len(results)}/{len(combos)}')
+    print(f'Wall time: {total_time / 60:.1f} minutes')
+    print(f'Output: {output_file}')
 
-    print(f"\n{'=' * 80}")
-    print("Grid search complete!")
-    print(f"{'=' * 80}")
-    print(f"Total time: {total_time / 60:.1f} minutes")
-    print(f"Successful combinations: {len(results)}/{len(threshold_combos)}")
-    print(f"Results saved to: {output_file}")
-    return results
 
-if __name__ == "__main__":
-    results = main()
+if __name__ == '__main__':
+    main()

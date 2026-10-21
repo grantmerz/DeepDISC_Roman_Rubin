@@ -45,6 +45,11 @@ LSST Science Pipelines (Butler) to read DC2.
 
 This section describes the complete workflow for processing Roman and LSST data for training DeepDISC models.
 
+The Slurm scripts in `jobs/` were written for NCSA Delta. Before running one, edit its `#SBATCH` account and
+partition lines, the conda environment, and the hard-coded paths (`/u/yse2/...`, `/work/hdd/bdsp/...`,
+`CFG_FILE`, data and output directories) to match your system. Most of them `cd ~` and expect the repository
+scripts there, so either change that `cd` to the repository root or copy the scripts.
+
 ### 1. Downloading and Preparing Roman Data
 
 After downloading the FITS files, use `data_processing/roman/prepare_roman_data.py` to prepare the data into the COCO format. This script creates cutouts from the Roman images and also generates annotations based on the segmentation masks provided by Troxel that were done by SExtractor. These annotations, as of 10/13/25, aren't used as part of our pipeline yet.
@@ -146,15 +151,22 @@ model.pixel_std = [
 Each model in the paper has its own config in `configs/solo/`. Set the pixel mean and standard deviation from
 step 6, the batch size and the number of epochs there.
 
-| Model in the paper | Config |
-| --- | --- |
-| DeepDISC Rubin (baseline) | `swin_lsst_30k.py` |
-| DeepDISC RubinUps (Lanczos upsampled) | `swin_ups_lsst_30k.py` |
-| DeepDISC RubinPadded | `swin_lsst_30k_pad.py` |
-| DeepDISC PatchSize13 | `swin_ps13_ups_lsst_30k.py` |
-| DeepDISC Rubin+Roman | `swin_comb_lsst_roman_30k.py` |
+| Model in the paper | Config (inference) | Trained with |
+| --- | --- | --- |
+| DeepDISC Rubin (baseline) | `swin_lsst_30k.py` | `run_model_job_30k.py` + `swin_lsst_keypoints.sh`* |
+| DeepDISC RubinUps (Lanczos upsampled) | `swin_ups_lsst_30k.py` | `train_model_30k.py` |
+| DeepDISC RubinPadded | `swin_lsst_30k_pad.py` | `train_model_30k.py` |
+| DeepDISC PatchSize13 | `swin_ps13_ups_lsst_30k.py` | `train_model_30k.py` |
+| DeepDISC Rubin+Roman | `swin_comb_lsst_roman_30k.py` | `run_model_job_30k_comb.py` with `swin_comb_job_keypoint_30k.py`* |
+| Distillation (Future directions) | `swin_distill_job_keypoint_30k.py` | `run_model_job_30k_distill.py` + `swin_distill_keypoints.sh`* |
+| CLIP (Future directions) | `swin_clip_lsst_roman_30k.py` | `train_clip_model_30k.py` + `jobs/train_clip_30k.sh` |
 
-Train with `train_model_30k.py`; `jobs/train_30k.sh` is the Slurm script used for the paper:
+\* In `/work/hdd/bdsp/g4merz/RubinRoman/` on NCSA Delta. `swin_lsst_keypoints.sh` has since been reused for
+another run; the baseline was Slurm job 15658778 from that folder. The RubinUps, PatchSize13 and Rubin+Roman
+models also need the cached WCS remap maps from `cache_wcs_maps.py` / `run_cache_wcs_maps.sh` (same folder).
+
+The RubinUps, RubinPadded and PatchSize13 runs were resumed from intermediate checkpoints, with the resume
+epoch and learning rate edited in the training script before each resume. Train with `train_model_30k.py`:
 
 ```bash
 python train_model_30k.py --cfgfile configs/solo/swin_lsst_30k.py \

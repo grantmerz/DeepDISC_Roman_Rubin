@@ -61,9 +61,9 @@ import pandas as pd
 
 from fof_classify import (
     find_matches, build_table, get_stage1_counts,
-    classify_stg1, classify_stage2, stage2_summary
+    classify_stg1, classify_stage2, stage2_summary,
+    add_sig_blend_flag
 )
-from metrics import compute_scalar_metrics, print_scalar_metrics
 
 warnings.filterwarnings('ignore')
 
@@ -127,7 +127,7 @@ def get_col_config(dd_det_cols):
             'psf_fwhm_i': 'psf_fwhm_i',
             'psf_fwhm_z': 'psf_fwhm_z',
             'psf_fwhm_y': 'psf_fwhm_y',
-            'extendedness': 'class', # rename to 'class' to match DD (0 is star, 1 is galaxy)
+            'extendedness': 'class', # rename to 'class' to match DD (Note: for LSST det, 0 is star, 1 is galaxy)
             'blendedness': 'blendedness',
             'x': 'x',
             'y': 'y',
@@ -139,7 +139,7 @@ def get_col_config(dd_det_cols):
             'id': 'id',
             'ra': 'ra',
             'dec': 'dec',
-            'truth_type': 'class',  # rename to match DD (2 is star, 1 is galaxy)
+            'truth_type': 'class',  # rename to match DD (Note: for LSST truth, 2 is star, 1 is galaxy)
             'tract': 'tract',
             'patch': 'patch',
             'mag_u': 'mag_u',
@@ -228,7 +228,7 @@ def get_col_config(dd_det_cols):
 # Pipeline for one (pipeline, linking_length)
 # ============================================================================
 def run_single_pipeline(det_cat, truth_cat, col_config, det_prefix,
-                        linking_length, out_dir, truth_mag_limit,
+                        linking_length, out_dir, truth_mag_limit, dmag_sig,
                         threshold_tag=None, match_rad=None, verbose=True):
     """
     Run full FOF + classify pipeline for one detector at one linking length.
@@ -250,6 +250,9 @@ def run_single_pipeline(det_cat, truth_cat, col_config, det_prefix,
         Base output directory ({run_dir}/analysis_cats/).
     truth_mag_limit : float
         For naming output files.
+    dmag_sig : float
+        Maximum magnitude gap between the two brightest connected truths
+        for the group to be flagged as a significant blend. Default 2.0.
     threshold_tag : str or None
         Subdirectory for threshold-dependent results (e.g. 's0.5_n0.5').
         Used for DD to separate results by score/NMS combo.
@@ -333,6 +336,8 @@ def run_single_pipeline(det_cat, truth_cat, col_config, det_prefix,
     t0 = time.time()
     analysis_df = classify_stage2(analysis_df, counts, det_prefix,
                                   match_rad, verbose=verbose)
+    analysis_df = add_sig_blend_flag(analysis_df, det_prefix, dmag_sig=dmag_sig)
+    
     if verbose:
         print(f"  Stage 2 done in {time.time() - t0:.1f}s")
 
@@ -344,9 +349,9 @@ def run_single_pipeline(det_cat, truth_cat, col_config, det_prefix,
 
     # --- Summary & metrics ---
     stage2_summary(analysis_df, det_prefix)
-    metrics = compute_scalar_metrics(analysis_df, det_prefix)
-    print_scalar_metrics(metrics, f'{det_prefix.upper()} LL={ll_str}"')
-
+    # metrics = compute_scalar_metrics(analysis_df, det_prefix)
+    # print_scalar_metrics(metrics, f'{det_prefix.upper()} LL={ll_str}"')
+    metrics = None
     return analysis_df, metrics
 
 
@@ -371,11 +376,13 @@ def parse_args():
                         help='NMS threshold for DD predictions')
     parser.add_argument('--mag-limit', default='gold', choices=MAG_LIMITS.keys(),
                         help='Magnitude limit key (default: gold)')
-    parser.add_argument('--buffer', type=int, default=1, choices=[0, 1, 2],
-                        help='Buffer to add to mag limit (default: 1)')
+    parser.add_argument('--buffer', type=int, default=2, choices=[0, 1, 2],
+                        help='Buffer to add to mag limit (default: 2)')
+    parser.add_argument('--dmag-sig', type=float, default=2.0,
+                        help='Significant-blend magnitude gap threshold (default: 2.0). ')
     parser.add_argument('--linking-lengths', nargs='+', type=float,
-                        default=[1.0, 2.0],
-                        help='FOF linking lengths in arcseconds (default: 1.0 2.0)')
+                        default=[1.0, 0.5],
+                        help='FOF linking lengths in arcseconds (default: 1.0)')
     parser.add_argument('--match-rad', type=float, default=None,
                         help=('Stage 2 matching radius in arcseconds. '
                               'Default: use each linking length value'))
@@ -390,6 +397,14 @@ def main():
     run_dir = os.path.join(root_run_dir, args.run_name)
     test_cats_dir = os.path.expanduser(args.test_cats_dir)
     truth_mag_limit = MAG_LIMITS[args.mag_limit] + args.buffer
+    if args.dmag_sig > args.buffer:
+        print(
+            f"\n  WARNING: dmag_sig ({args.dmag_sig}) > buffer ({args.buffer}). "
+            f"Companions in [{MAG_LIMITS[args.mag_limit] + args.buffer:.2f}, {MAG_LIMITS[args.mag_limit] + args.dmag_sig:.2f}] are "
+            f"absent from the truth catalog, so truths FAINTER than "
+            f"{MAG_LIMITS[args.mag_limit] + args.buffer - args.dmag_sig:.2f} can lose their only significant "
+            f"companion. Significance false negatives, concentrated at the faint end.\n"
+        )
     out_dir = os.path.join(run_dir, 'analysis_cats')
     threshold_tag = f's{args.score_thresh}_n{args.nms_thresh}'
     truth_fn = os.path.join(
@@ -406,17 +421,19 @@ def main():
     print("FOF MATCHING AND CLASSIFICATION")
     print("=" * 80)
     print(f"\nArguments used (CLI):")
-    print(f"  root_run_dir:     {args.root_run_dir}")
-    print(f"  run_name:         {args.run_name}")
-    print(f"  preds_dir:        {args.preds_dir}")
-    print(f"  test_cats_dir:    {args.test_cats_dir}")
-    print(f"  score_thresh:     {args.score_thresh}")
-    print(f"  nms_thresh:       {args.nms_thresh}")
-    print(f"  mag_limit:        {args.mag_limit}")
-    print(f"  buffer:           {args.buffer}")
-    print(f"  linking_lengths:  {args.linking_lengths}")
-    print(f"  match_rad:        {args.match_rad}")
-    print(f"  skip_lsst:        {args.skip_lsst}")
+    for k, v in vars(args).items(): 
+        print(f"  {k}: {v}")
+    # print(f"  root_run_dir:     {args.root_run_dir}")
+    # print(f"  run_name:         {args.run_name}")
+    # print(f"  preds_dir:        {args.preds_dir}")
+    # print(f"  test_cats_dir:    {args.test_cats_dir}")
+    # print(f"  score_thresh:     {args.score_thresh}")
+    # print(f"  nms_thresh:       {args.nms_thresh}")
+    # print(f"  mag_limit:        {args.mag_limit}")
+    # print(f"  buffer:           {args.buffer}")
+    # print(f"  linking_lengths:  {args.linking_lengths}")
+    # print(f"  match_rad:        {args.match_rad}")
+    # print(f"  skip_lsst:        {args.skip_lsst}")
 
     print(f"\nResolved parameters used at runtime:")
     print(f"  run_dir:          {run_dir}")
@@ -466,7 +483,7 @@ def main():
         _, dd_metrics = run_single_pipeline(
             dd_det_cat, lsst_truth_cat, col_config,
             det_prefix='dd', linking_length=ll,
-            out_dir=out_dir, truth_mag_limit=truth_mag_limit,
+            out_dir=out_dir, truth_mag_limit=truth_mag_limit, dmag_sig=args.dmag_sig,
             threshold_tag=threshold_tag, match_rad=args.match_rad
         )
         all_metrics[('dd', str(ll))] = dd_metrics
@@ -476,7 +493,7 @@ def main():
             _, lsst_metrics = run_single_pipeline(
                 lsst_det_cat, lsst_truth_cat, col_config,
                 det_prefix='lsst', linking_length=ll,
-                out_dir=out_dir, truth_mag_limit=truth_mag_limit,
+                out_dir=out_dir, truth_mag_limit=truth_mag_limit, dmag_sig=args.dmag_sig,
                 match_rad=args.match_rad
             )
             all_metrics[('lsst', str(ll))] = lsst_metrics
@@ -495,16 +512,16 @@ def main():
     print(f"    class_{truth_mag_limit:.2f}.parquet — classified table")
 
     # Comparison table
-    print(f"\n{'─' * 60}")
-    print(f"{'Pipeline':>8} {'LL':>5} {'Comp':>8} {'Purity':>8} "
-          f"{'F1':>8} {'BlendLoss':>10} {'ShredFrac':>10}")
-    print(f"{'─' * 60}")
-    for (prefix, ll_str), m in all_metrics.items():
-        print(f"{prefix.upper():>8} {ll_str:>5} "
-              f"{m['completeness']:>8.4f} {m['purity']:>8.4f} "
-              f"{m['f1']:>8.4f} {m['blend_loss_frac']:>10.4f} "
-              f"{m['shred_frac']:>10.4f}")
-    print(f"{'─' * 60}")
+    # print(f"\n{'─' * 60}")
+    # print(f"{'Pipeline':>8} {'LL':>5} {'Comp':>8} {'Purity':>8} "
+    #       f"{'F1':>8} {'BlendLoss':>10} {'ShredFrac':>10}")
+    # print(f"{'─' * 60}")
+    # for (prefix, ll_str), m in all_metrics.items():
+    #     print(f"{prefix.upper():>8} {ll_str:>5} "
+    #           f"{m['completeness']:>8.4f} {m['purity']:>8.4f} "
+    #           f"{m['f1']:>8.4f} {m['blend_loss_frac']:>10.4f} "
+    #           f"{m['shred_frac']:>10.4f}")
+    # print(f"{'─' * 60}")
 
 
 if __name__ == '__main__':
