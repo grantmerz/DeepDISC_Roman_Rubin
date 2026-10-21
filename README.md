@@ -1,5 +1,46 @@
 # Joint analysis of Roman/Rubin data with DeepDISC
 
+Analysis code for the LSST DESC paper *DeepDISC for Joint Rubin-Roman Source Detection, Deblending, and
+Classification*. It builds the Rubin and Roman training data from DC2, trains the DeepDISC models (Rubin-only,
+the resampling-ablation variants, and Rubin+Roman), runs inference, matches detections to truth, and computes the
+metrics and figures in the paper.
+
+**Software Summary Document (DESC software policy):** *link to be added*
+
+**License:** MIT (see [LICENSE](LICENSE)).
+
+## Installation
+
+The code was run on NCSA Delta (Red Hat Enterprise Linux 9.6, NVIDIA A100 and H200 GPUs) with Python 3.10.
+A conda environment with the following versions is known to work:
+
+| Package | Version |
+| --- | --- |
+| PyTorch / torchvision | 2.9.1 / 0.24.1 (CUDA 12.8 build) |
+| detectron2 | 0.6, installed from source at commit `fd27788985af` |
+| DeepDISC | the `grantmerz/deepdisc` fork, installed in editable mode |
+| numpy, scipy, pandas | 1.26.4, 1.15.3, 2.3.3 |
+| astropy, galsim | 6.1.7, 2.7.2 |
+| FoFCatalogMatching | 0.1.0 |
+| opencv-python, scikit-image, sep | 4.12.0, 0.25.2, 1.4.1 |
+| pyarrow, scikit-learn, matplotlib | 22.0.0, 1.7.2, 3.10.7 |
+| omegaconf, fvcore | 2.3.0, 0.1.5 |
+
+```bash
+conda create -n deepdisc_rr python=3.10
+conda activate deepdisc_rr
+pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu128
+pip install 'git+https://github.com/facebookresearch/detectron2.git@fd27788985af0f4ca800bca563acdb700bb890e2'
+git clone https://github.com/grantmerz/deepdisc.git && pip install -e ./deepdisc
+pip install numpy==1.26.4 scipy==1.15.3 pandas==2.3.3 astropy==6.1.7 galsim==2.7.2 FoFCatalogMatching==0.1.0 \
+    opencv-python==4.12.0.88 scikit-image==0.25.2 sep==1.4.1 pyarrow==22.0.0 scikit-learn==1.7.2 matplotlib==3.10.7
+git clone https://github.com/grantmerz/DeepDISC_Roman_Rubin.git
+```
+
+The model configs and the custom detectron2 components (mappers, image readers, poolers, the patch-size-aware Swin
+backbone) are in `configs/`. The LSST data-gathering notebooks in `data_processing/lsst/` additionally need the
+LSST Science Pipelines (Butler) to read DC2.
+
 ## Data Processing Pipeline
 
 This section describes the complete workflow for processing Roman and LSST data for training DeepDISC models.
@@ -102,44 +143,117 @@ model.pixel_std = [
 
 ### 7. Training the Model
 
-Modify `swin_lsst.py` to use the ImageNet Swin Transformer by updating:
-- Number of epochs based on training set size
-- Batch size appropriate for your GPU setup
-- Pixel mean and standard deviation values from step 6
+Each model in the paper has its own config in `configs/solo/`. Set the pixel mean and standard deviation from
+step 6, the batch size and the number of epochs there.
 
-Then train the model with `run_model.py` using the below command:
+| Model in the paper | Config |
+| --- | --- |
+| DeepDISC Rubin (baseline) | `swin_lsst_30k.py` |
+| DeepDISC RubinUps (Lanczos upsampled) | `swin_ups_lsst_30k.py` |
+| DeepDISC RubinPadded | `swin_lsst_30k_pad.py` |
+| DeepDISC PatchSize13 | `swin_ps13_ups_lsst_30k.py` |
+| DeepDISC Rubin+Roman | `swin_comb_lsst_roman_30k.py` |
+
+Train with `train_model_30k.py`; `jobs/train_30k.sh` is the Slurm script used for the paper:
 
 ```bash
-python run_model.py --cfgfile ./deepdisc/configs/solo/swin_lsst.py --train-metadata lsst_data/annotations/train.json --eval-metadata lsst_data/annotations/val.json --num-gpus 2 --run-name lsst --output-dir ./lsst_runs/run1
+python train_model_30k.py --cfgfile configs/solo/swin_lsst_30k.py \
+    --train-metadata /path/to/lsst_data/annotations_lvl5/train_30k_keypoints.json \
+    --eval-metadata /path/to/lsst_data/annotations_lvl5/val_4k_keypoints.json \
+    --num-gpus 4 --run-name lsst5_30k_4h200_bs192_ep50 --output-dir ./lsst_runs/lsst5_30k_4h200_bs192_ep50
 ```
 
+### 8. Inference over the threshold grid
+
+Run inference on the validation set for every combination of the ROI score threshold and the NMS threshold
+(0.20–0.90 and 0.25–0.75 in steps of 0.05; `jobs/run_inference.sh`), then add PSF magnitudes to the
+detections:
+
+```bash
+python run_inference.py --model_type standard_30k --data_split eval --score_thresholds 0.2 0.25 ... 0.9 \
+    --nms_thresholds 0.25 0.3 ... 0.75 --num_gpus 4
+python add_dd_mags.py --run_name lsst5_30k_4h200_bs192_ep50 --preds_dir eval
+```
+
+### 9. Matching and operating-point selection
+
+`grid_search.py` runs the two-stage FOF + Hungarian matching (`fof_classify.py`) and computes the metrics
+(`blend_metrics.py`) for every grid point. `run_select_thresh.sh` picks the F1-optimal operating point and
+`run_plot_gs.sh` plots the grid:
+
+```bash
+python grid_search.py --run-dir ~/lsst_runs/lsst5_30k_4h200_bs192_ep50 --test-cats-dir /path/to/test_cats \
+    --output ~/lsst_runs/lsst5_30k_4h200_bs192_ep50/metrics/gold_buf2/gs_metrics.csv --mag-limit gold --buffer 2
+./run_select_thresh.sh lsst30k gold
+./run_plot_gs.sh lsst30k gold
+```
+
+### 10. Test-set evaluation
+
+Run inference on the test set at the selected operating point (`run_inference.py --data_split test`), add
+magnitudes, and build the matched analysis catalogs:
+
+```bash
+python run_fof_classify.py --run-name lsst5_30k_4h200_bs192_ep50 --preds-dir test --test-cats-dir /path/to/test_cats \
+    --score-thresh 0.5 --nms-thresh 0.6
+```
+
+### 11. Paper tables and figures
+
+| Paper content | Code |
+| --- | --- |
+| Scalar metric tables and confidence intervals | `compute_scalar_table.py`, `blend_metrics.py`, `ci_readme_numbers.py` |
+| Magnitude-binned curves | `metrics.ipynb` (uses `plot_binned_metrics.py`) |
+| Resampling ablation curves (appendix) | `ablation_metrics.ipynb` |
+| Anchor coverage (Section 4.2, appendix) | `compute_anchor_recall.py`, `jobs/anchor_recall.sh`, `anchor_recall.ipynb` |
+| Matching-procedure figure | `matching_diagram.py` |
+| Attention-window figure | `window_diagram.py` |
+| Scene figure | `scene_plots.ipynb` |
+| Blend-system examples | `blend_examples.ipynb` |
+| Grid-search heatmaps and trade-off plot | `plot_grid_search.py`, `select_thresh.py` |
+
 ## File Structure
-<!--
-This section explains the structure and purpose of the folders/files in this repo.
 
-As of 11/13/24 and based on [LSST/Rubin Project Outline](https://docs.google.com/document/d/1hFqOK-6hv6E2UjG0CJjX5IfqadrR0yOK_ekBkm2A1ns/edit?pli=1&tab=t.0#heading=h.kqvlnv4vmq2p), the most relevant notebooks and scripts are `metrics and metrics_v2` notebooks and `lsst_anns.py`. 
--->
+### Pipeline scripts
 
+| File | Purpose |
+| --- | --- |
+| `lsst_anns.py` | Generates the training labels from GalSim renderings of the truth catalog (step 4) |
+| `add_keypoints.py` | Adds each object's centroid keypoint to the annotations |
+| `train_model_30k.py` | Trains a model from a config in `configs/solo/` (step 7) |
+| `run_inference.py` | Runs inference for a list of ROI score and NMS thresholds (steps 8 and 10) |
+| `add_dd_mags.py` | Adds PSF magnitudes to DeepDISC detections |
+| `fof_classify.py` | Two-stage FOF + Hungarian matching and the Stage 1/2 classification |
+| `run_fof_classify.py` | Matches one operating point and writes the analysis catalogs (step 10) |
+| `blend_metrics.py` | Metric definitions, counts, confidence intervals and magnitude-binned curves for the paper |
+| `grid_search.py` | Matching and metrics for every point of the threshold grid (step 9) |
+| `select_thresh.py`, `run_select_thresh.sh` | Operating-point selection from the grid-search output |
+| `plot_grid_search.py`, `run_plot_gs.sh` | Grid-search heatmaps and purity-vs-completeness plots |
+| `compute_scalar_table.py` | Scalar metric tables with confidence intervals |
+| `plot_binned_metrics.py` | Magnitude-binned metric curves |
+| `compute_anchor_recall.py` | Best-anchor IoU and RPN recall per truth object (anchor-coverage analysis) |
+| `matching_diagram.py`, `window_diagram.py` | The matching-procedure and attention-window figures |
+| `test_fof_classify.py`, `test_select_thresh.py` | Tests for the matching and the operating-point selection |
+| `train_clip_model_30k.py`, `train_clip_model_100k.py`, `convert_checkpoint.py` | CLIP-style Rubin–Roman experiments (Future directions in the paper) |
 
 ### Notebooks
 
-**metrics_v2.ipynb (Currently working on as of 11/13/24)**: Slightly improved but incomplete version of **metrics.ipynb**: Using a class instead to set thresholds and make DeepDISC predictions, Plots of Obj Properties, Calcualting Detection Completeness, 1-1 Catalog Matching to Truth Catalog, 2D Histogram of FOF Plots
-
-**metrics.ipynb (Currently working on as of 11/13/24)**: Creating DeepDISC detection catalog, LSST Truth/Detection catalog based on Test Set, Calculating Detection Completeness, 1-1 Catalog Matching to Truth Catalog, Creating 2D Histogram FOF Plots, Creating Unrecognized Blend vs Mag Plots
-
-**AddRomanLSST.ipynb**: Adds Roman images to LSST images by both upsampling and padding LSST Images giving us images of dims (512,512).
-
-**galsim_truth_anns.ipynb (May not be as updated as `lsst_anns.py`)**: Notebook version of `lsst_anns.py` that creates annotations in _multiband_ for obsjs in cutouts using LSST Truth Catalog
-
-<!-- **galsim_truth_anns_multiband.ipynb (Has been incorporated into `lsst_anns.py`)**: Grant's notebook adding multiband info to annotations -->
-
-**RunInference.ipynb**: Notebook that evaluates the model and creates all the plots (AP scores, metrics, mags vs metrics, confusion matrices, etc).
-
-**unrec_blend_frac.ipynb**: Notebook to calculate unrecognized blend fraction for both combined data trained model and non-combined data trained model.
-
-**AllObjsHist.ipynb**: Plots histograms of distributions of Roman data.
+| Notebook | Purpose |
+| --- | --- |
+| `metrics.ipynb` | Magnitude-binned curves and scalar tables for the paper's main results |
+| `ablation_metrics.ipynb` | Magnitude-binned curves for the resampling ablation |
+| `anchor_recall.ipynb` | Anchor-coverage analysis |
+| `scene_plots.ipynb` | Scene-level detection figure |
+| `blend_examples.ipynb` | Blend-system example figures |
+| `galsim_truth_anns.ipynb` | Notebook version of `lsst_anns.py` (may be behind the script) |
+| `AllObjsHist.ipynb` | Histograms of the Roman object distributions |
 
 ### Folders
 
-**data_processing/**: Contains all the data processing scripts/notebooks used to explore and format Roman and LSST data. 
-<!-- The subfolder `lsst/` has the notebooks used to combine Roman + LSST data (starting with Roman data first and adding LSST images) and to create the LSST Detection catalog. -->
+| Folder | Contents |
+| --- | --- |
+| `configs/` | Model configs (`solo/`) and custom detectron2 components (`custom/`) |
+| `data_processing/` | Roman and LSST data download, cutouts, catalogs and annotation clean-up (steps 1–6) |
+| `jobs/` | Slurm scripts for data preparation, training, inference and the anchor-coverage analysis |
+| `docs/` | Notes, including a review of the patch-size-13 architecture |
+| `old/` | Superseded notebooks and scripts, kept for reference |
