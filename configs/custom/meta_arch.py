@@ -58,7 +58,8 @@ class GeneralizedRCNNMultimodal(nn.Module):
         roman_pixel_mean: Tuple[float],
         roman_pixel_std: Tuple[float],
         input_format: Optional[str] = None,
-        vis_period: int = 0
+        vis_period: int = 0,
+        extract_embeddings: bool = False, # whether to extract contrastive embeddings at inference time for analysis
     ):
         """
         Args:
@@ -75,6 +76,7 @@ class GeneralizedRCNNMultimodal(nn.Module):
         self.backbone_k = backbone_k # roman
         self.proposal_generator = proposal_generator
         self.roi_heads = roi_heads
+        self.extract_embeddings = extract_embeddings
         
         outshape_q = backbone_q.output_shape()
         outshape_k = backbone_k.output_shape()
@@ -336,6 +338,30 @@ class GeneralizedRCNNMultimodal(nn.Module):
             detected_instances = [x.to(self.device) for x in detected_instances]
             # from detectron2/modeling/roi_heads/roi_heads.py, StandardROIHeads.forward_with_given_boxes
             results = self.roi_heads.forward_with_given_boxes(features, detected_instances)
+
+        # embedding extraction for only CLIP-style models (has to have forward_embeddings method)
+        # can do for just rubin features or both rubin and roman features
+        if self.extract_embeddings:
+            # check if mapper also loaded Roman data for this batch
+            features_k = None
+            if "image_roman" in batched_inputs[0]:
+                # we need to preprocess Roman images thru key encoder pipeline
+                # so we build a minimal list of dicts using the "image_roman" key
+                # so preprocess_image can find it since that's the only key it needs
+                batched_roman = [{"image_roman": bi["image_roman"]} for bi in batched_inputs]
+                imgs_roman = self.preprocess_image(
+                    batched_roman,
+                    "image_roman",
+                    self.roman_pixel_mean,
+                    self.roman_pixel_std,
+                    self.backbone_k.size_divisibility,
+                    self.backbone_k.padding_constraints
+                )
+                # now we need to run the roman images thru key encoder to get
+                # key features and we don't need grads since it's just inference
+                with torch.no_grad():
+                    features_k = self.backbone_k(imgs_roman.tensor) # keys: NxC 
+            results = self.roi_heads.forward_embeddings(features, results, features_k)
     
         if do_postprocess:
             assert not torch.jit.is_scripting(), "Scripting is not supported for postprocess."

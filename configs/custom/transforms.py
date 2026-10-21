@@ -1,49 +1,31 @@
-import copy
-import torch
-import warnings
-from deepdisc.model.loaders import DataMapper, DictMapper
-import detectron2.data.transforms as T
-from detectron2.data import detection_utils as utils
-import os
-from reproject import reproject_interp, reproject_adaptive
-from astropy.wcs import WCS
-import cv2
-import hashlib
+import cv2, hashlib, os
 import numpy as np
+import detectron2.data.transforms as T
+import deepdisc.astrodet.detectron as detectron_addons
 
-
-
-def build_remap(wcs_rubin, wcs_roman, src_shape, dst_shape):
+def build_remap(wcs_rubin, wcs_roman, dst_shape):
     """
     Precompute float32 remap arrays for cv2.remap.
-    dst pixel → sky → src pixel
+    dst pixel -> sky -> src pixel
     """
     new_h, new_w = dst_shape
     # Grid of all Roman pixel coords
     yg, xg = np.indices((512, 512))
-
-
-    #sky = wcs_roman.pixel_to_world(xg.ravel(), yg.ravel())
-    #x_src, y_src = wcs_rubin.world_to_pixel(sky)
-
-
     ra, dec = wcs_roman.wcs_pix2world(xg.ravel(), yg.ravel(), 0)
     src_x, src_y = wcs_rubin.wcs_world2pix(ra, dec, 0)
-    
-
     map_x = src_x.reshape(new_h, new_w).astype(np.float32)
     map_y = src_y.reshape(new_h, new_w).astype(np.float32)
     return map_x, map_y
 
 class LanczosResizeTransform(T.Transform):
     """
-    From /projects/bdsp/miniconda3/envs/ddbtknv/lib/python3.10/site-packages/fvcore/transforms/transform.py,
+    from /projects/bdsp/miniconda3/envs/ddbtknv/lib/python3.10/site-packages/fvcore/transforms/transform.py,
     we need to implement apply_image, apply_segmentation, and apply_coords to be compatible with Detectron2's transform_instance_annotations
     
-    Resize an image from (h, w) to (new_h, new_w) using Lanczos interpolation and cv2 remapping
-    to account for pixel distortions between Rubin and Roman WCS.  Use Lanczos 
-    for the image and nearest-neighbor for segmentation masks.  Transform 
-    coords (bboxes, polygons, keypoints) by converting rubin_pixel->world->roman_pixel with the WCS's 
+    Resize an image from (h, w) to (new_h, new_w) using Lanczos interpolation
+    and cv2 remapping to account for pixel distortions between Rubin and Roman WCS.  
+    Use Lanczos for the image and nearest-neighbor for segmentation masks. Transform 
+    coords (bboxes, polygons, keypoints) by converting rubin_pixel->world->roman_pixel with the WCS's
     
     Detectron2's transform_instance_annotations delegates bbox corner scaling
     and polygon point scaling to apply_coords
@@ -55,7 +37,7 @@ class LanczosResizeTransform(T.Transform):
     new_h, new_w : int
         Target image height and width.
     """
-    def __init__(self, h: int, w: int, new_h: int, new_w: int, wcs_rubin, wcs_roman, rubin_fns,roman_fns, cache_dir):
+    def __init__(self, h: int, w: int, new_h: int, new_w: int, wcs_rubin, wcs_roman, rubin_fns, roman_fns, cache_dir):
         super().__init__()
         self.h = h
         self.w = w
@@ -65,15 +47,15 @@ class LanczosResizeTransform(T.Transform):
         self.scale_y = new_h / h
         self.wcs_rubin = wcs_rubin
         self.wcs_roman = wcs_roman
-
         # We cache the maps that cv2 uses to map rubin to roman pixels based on the WCS 
         cache_key = hashlib.md5((rubin_fns + roman_fns).encode()).hexdigest()
         cache_path = os.path.join(cache_dir, f"{cache_key}.npy")
         self.map_x, self.map_y = np.load(cache_path)
-        
+    
     def apply_image(self, img: np.ndarray) -> np.ndarray:
         """
         Resize image using Lanczos (cv2.INTER_LANCZOS4)
+        Works on float32 multi-channel arrays (e.g. 6-band Rubin HxWx6)
 
         Parameters
         ----------
@@ -88,7 +70,6 @@ class LanczosResizeTransform(T.Transform):
         assert self.h == h and self.w == w, (
             f"Input size mismatch: expected {self.h}x{self.w}, got {h}x{w}"
         )   
-
         C = img.shape[2]
         channels = [
             cv2.remap(img[..., c], self.map_x, self.map_y,
@@ -97,7 +78,7 @@ class LanczosResizeTransform(T.Transform):
             for c in range(C)
         ]
         return np.stack(channels, axis=-1)
-            
+        # return cv2.resize(img, (self.new_w, self.new_h), interpolation=cv2.INTER_LANCZOS4)
     
     def apply_segmentation(self, segmentation: np.ndarray) -> np.ndarray:
         """
@@ -118,7 +99,7 @@ class LanczosResizeTransform(T.Transform):
 
     def apply_coords(self, coords: np.ndarray) -> np.ndarray:
         """
-        Covert Rubin (x, y) coordinate pairs to Roman (x, y)
+        Scale (x, y) coordinate pairs by (scale_x, scale_y)
         Detectron2's transform_instance_annotations calls this method for
           - bounding box corners  (via apply_box)
           - segmentation polygon points (via apply_polygons)
@@ -132,8 +113,10 @@ class LanczosResizeTransform(T.Transform):
         -------
         np.ndarray, shape (N, 2)
         """
-    
-        coords = coords.astype(np.float64)
+        coords = coords.astype(float)
+        # coords[:, 0] *= self.scale_x
+        # coords[:, 1] *= self.scale_y
+        # return coords
         # Use low-level C API instead of SkyCoord overhead
         ra, dec = self.wcs_rubin.wcs_pix2world(coords[:, 0], coords[:, 1], 0)
         x_rom, y_rom = self.wcs_roman.wcs_world2pix(ra, dec, 0)
@@ -155,12 +138,6 @@ class LanczosResize(T.Augmentation):
     ----------
     new_h, new_w : int
         Target height and width.
-    wcs_rubin,wcs_roman: WCS
-        Astropy WCS for each image
-    rubin_fns, roman_fns: str
-        File name strings for the images
-    cache_dir: str
-        Dir of cached maps for cv2 
     
     like this: 
     augmentations = T.AugmentationList([
@@ -169,7 +146,7 @@ class LanczosResize(T.Augmentation):
     ])
     """
 
-    def __init__(self, new_h: int, new_w: int, wcs_rubin, wcs_roman,rubin_fns,roman_fns,cache_dir):
+    def __init__(self, new_h: int, new_w: int, wcs_rubin, wcs_roman, rubin_fns, roman_fns, cache_dir):
         super().__init__()
         self.new_h = new_h
         self.new_w = new_w
@@ -191,4 +168,42 @@ class LanczosResize(T.Augmentation):
         LanczosResizeTransform
         """
         h, w = image.shape[:2]
-        return LanczosResizeTransform(h, w, self.new_h, self.new_w, self.wcs_rubin, self.wcs_roman,self.rubin_fns,self.roman_fns,self.cache_dir)
+        return LanczosResizeTransform(h, w, self.new_h, self.new_w, self.wcs_rubin, self.wcs_roman, self.rubin_fns, self.roman_fns, self.cache_dir)
+
+def dc2_train_augs_512(new_h=512, new_w=512):
+    """
+    Same as dc2_train_augs, but with a fixed new_h and new_w resize to match LSST to Roman
+
+    Parameters
+    ----------
+    new_h, new_w : int
+        Target height and width for the LanczosResize transform. Default is 512x512 to match Roman image size
+
+    Returns
+    -------
+    augs: detectron_addons.KRandomAugmentationList
+        The list of augs for training.  Set to RandomRotation, RandomFlip, RandomCrop
+    """
+    # have to do resize first so that all subsequent augs operate on the correctly scaled image and coords
+    resize = T.AugmentationList([LanczosResize(new_h, new_w)])
+    augs = detectron_addons.KRandomAugmentationList(
+        [
+            # my custom augs
+            T.RandomRotation([0, 180, -90, 90], sample_style="choice"),
+            T.RandomFlip(prob=0.5),
+            T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
+            #detectron_addons.CustomAug(multiband_gaussblur,prob=0.5),
+        ],
+        k=-1,
+        cropaug=None,
+        #cropaug=T.RandomCrop("relative", (0.5, 0.5))
+    )
+    # we're making this class so that we can just 
+    # return a single transform from this function, which is what the mapper expects    
+    class CombinedAug:
+        def __call__(self, aug_input):
+            tfm1 = resize(aug_input)
+            tfm2 = augs(aug_input)
+            return tfm1 + tfm2
+
+    return CombinedAug()

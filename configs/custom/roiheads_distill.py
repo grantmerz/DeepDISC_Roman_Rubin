@@ -217,4 +217,3 @@ class DistillCascadeROIHeads(CascadeROIHeads):
             pred_instances = self.forward_with_given_boxes(features_student, pred_instances)
             return pred_instances, {}
 
-

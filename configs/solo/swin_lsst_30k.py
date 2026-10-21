@@ -8,6 +8,7 @@ from omegaconf import OmegaConf
 # ---------------------------------------------------------------------------- #
 # bs: total batch size spread across multiple GPUs & make sure it's divisible by the number of GPUs
 bs = 192 # for 4 H200 GPUS with 140G memory each as each GPU can handle bs=48
+# bs = 32 # for 2 A100 GPUs as each GPU can handle bs=16
 # steps_per_epoch = num of steps per epoch = num of training images / bs
 # a training step/iteration is when the model weights are updated (once per batch)
 num_imgs = 30000
@@ -33,7 +34,8 @@ from deepdisc.data_format.augment_image import dc2_train_augs
 
 # Overrides of the template COCO config
 # This is the cascade mask rcnn of an ImageNet-swin_base_patch4_window7_224_21k model
-train.init_checkpoint = "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl"
+# train.init_checkpoint = "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl"
+train.init_checkpoint = "/u/yse2/lsst_runs/lsst5_30k_4h200_bs192_ep50_musigma/checkpoints/lsst5_30k_4h200_bs192_ep50_musigma_14.pth"
 # for TimedLazyAstroTrainer (all in iters)
 train.timing_report_period = steps_per_epoch // 2 # report every n iters (for testing, 5)
 train.timing_rolling_window_size = steps_per_epoch // 2 # average over last n iters (for testing, 5)
@@ -116,23 +118,54 @@ model.backbone.bottom_up.in_chans = 6
 # ]
 
 # for 30k training set
+# old values calculated using method of just mean per-image mean/std, then avg both across images
+# but avg of stds is not the same as std of all pixels across all images, 
+# so I modified calc_pixel_mean_std.py to calculate the std properly 
 model.pixel_mean = [
-    0.05976027995347977,
-    0.056569650769233704,
-    0.0808037668466568,
-    0.11346549540758133,
-    0.14247749745845795,
-    0.22078551352024078,
+     0.05976027995347977,
+     0.056569650769233704,
+     0.0808037668466568,
+     0.11346549540758133,
+     0.14247749745845795,
+     0.22078551352024078,
 ]
 
 model.pixel_std = [
-    1.0054351091384888,
-    0.7062947750091553,
-    1.0013556480407715,
-    1.4049317836761475,
-    1.8567354679107666,
-    2.689509153366089,
+     1.0054351091384888,
+     0.7062947750091553,
+     1.0013556480407715,
+     1.4049317836761475,
+     1.8567354679107666,
+     2.689509153366089,
 ]
+# using the new calc_pixel_mean_std.py 4/21/26
+# model.pixel_mean = [
+#    0.05976010245856449,
+#    0.056551213257199154,
+#    0.0807974308255675,
+#    0.11346595361797499,
+#    0.1424569431407436,
+#    0.22072498425086592,
+# ]
+# model.pixel_std = [
+#    8.551560965881256,
+#    3.2360131344242697,
+#    3.999492200138785,
+#    5.343763750913966,
+#    7.1819629679759975,
+#    13.446398249754555,
+# ]
+
+# model.pixel_mean = [
+#     1.094736184839231,
+#     1.255953186783111,
+#     1.335622521843373,
+# ]
+# model.pixel_std = [
+#     108.57622247099296,
+#     112.3733361937791,
+#     112.99739769721853,
+# ]
 
 # LSST Data in 6 filters for 16 tiles
 # 7/11/25
@@ -161,15 +194,20 @@ for box_predictor in model.roi_heads.box_predictors:
     
 # change this function depending on the metadata format
 # needs to return where the cutout image data for each cutout is stored
-def roman_key_mapper(dataset_dict):
+def key_mapper(dataset_dict):
     fn = dataset_dict["file_name"]
     return fn
 
-dataloader.key_mapper = roman_key_mapper
-dataloader.test.mapper = loaders.DictMapper
+dataloader.key_mapper = key_mapper
 dataloader.train.mapper = loaders.DictMapper
 reader = RomanRubinImageReader()
-dataloader.imagereader = reader
+dataloader.train.imagereader = reader
+dataloader.train.keypoint_hflip_indices=[0]
+
+dataloader.test.mapper = loaders.DictMapper
+dataloader.test.imagereader = reader
+dataloader.test.keypoint_hflip_indices=[0]
+
 dataloader.steps_per_epoch = steps_per_epoch
 # ---------------------------------------------------------------------------- #
 # Yaml-style config (was formerly saved as a .yaml file, loaded to cfg_loader)
@@ -178,6 +216,7 @@ dataloader.steps_per_epoch = steps_per_epoch
 from .yacs_style_defaults import MISC, DATALOADER, DATASETS, GLOBAL, INPUT, MODEL, SOLVER, TEST
 
 # Overrides
+# DATALOADER.NUM_WORKERS = 4
 SOLVER.IMS_PER_BATCH = bs
 
 DATASETS.TRAIN = "astro_train"

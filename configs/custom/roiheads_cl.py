@@ -29,9 +29,10 @@ class ROIContrastiveHead(nn.Module):
     def __init__(self, in_dim, hidden_dim=1024, out_dim=128):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, out_dim),
+            nn.Linear(in_dim, out_dim)
+            # nn.Linear(in_dim, hidden_dim),
+            # nn.ReLU(inplace=True),
+            # nn.Linear(hidden_dim, out_dim),
         )
 
     def forward(self, x):
@@ -173,9 +174,7 @@ class ContrastiveCascadeROIHeads(CascadeROIHeads):
         self.proj_k = ROIContrastiveHead(
             self.proj_in_dim, contrastive_hidden_dim, contrastive_dim
         )
-    # def extract_embeddings(self, features_q, pred_instances):
-    #     # go throguh each instance and grab the feature from each box input features
-    #     # 
+
     def forward_contrastive(self, features_q, features_k, proposals, targets):
         """
         Compute the ROI-level symmetric InfoNCE (CLIP-style) contrastive loss
@@ -294,7 +293,7 @@ class ContrastiveCascadeROIHeads(CascadeROIHeads):
             "contr/mean_pos_per_anchor": mean_pos.detach(),
             "contr/frac_with_multi": frac_with_multi.detach()
         }
-
+    
     def forward(self, images, features_q, proposals, targets=None):
         """ 
         Ex: self.roi_heads(images_q_rubin, features_q, proposals, gt_instances) calls this forward function
@@ -350,4 +349,66 @@ class ContrastiveCascadeROIHeads(CascadeROIHeads):
             # mask + keypoint heads: run on surviving boxes after NMS
             pred_instances = self.forward_with_given_boxes(features_q, pred_instances)
             return pred_instances, {}
+    
+    @torch.no_grad()
+    def forward_embeddings(self, features_q, instances, features_k=None):
+        """
+        Extract contrastive embeddings for post-NMS detections at inference time
+
+        For each surviving detection, ROI-pools the Rubin FPN features at the
+        predicted box location, projects through proj_q, and attaches the
+        resulting L2-normalized embedding as pred_embeddings_q on each Instances
+        object.  
+        
+        Optionally does the same for Roman features (features_k) via
+        proj_k, attaching pred_embeddings_k. 
+ 
+        Args:
+            features_q (dict[str, Tensor]): Rubin FPN features, keyed by
+                feature level name (e.g. "p2", "p3", "p4", "p5")
+                Same dict that was passed to self.roi_heads() during inference
+            instances (list[Instances]): Per-image Instances with pred_boxes
+                set (i.e. post-NMS detections from _forward_box)
+            features_k (dict[str, Tensor] | None): Roman FPN features and None for Rubin-only runs
+
+        Returns:
+            list[Instances]: Same instances with the following new fields:
+                pred_embeddings_q  (N, contrastive_dim) float32, same device as instances (b/c detector_postprocess)
+                pred_embeddings_k  (N, contrastive_dim) float32, same device as instances [only if features_k given]
+        """
+        # grab the bounding boxes from each inst since feature_pooler needs a list of Boxes objs
+        boxes = [inst.pred_boxes for inst in instances]
+        # track dets per image so we can split the flat output back later
+        num_per_img = [len(inst) for inst in instances]
+        
+        # Rubin branch
+        # ROI-pool from Rubin FPN features at det box locations
+        pooled_fq = self.feature_pooler(
+            [features_q[f] for f in self.box_in_features], boxes
+        )
+        # (N_total, 256, 7, 7) -> (N_total, 256*7*7 = 12544)
+        pooled_fq = torch.flatten(pooled_fq, 1)
+        # project to contrastive space and L2-normalize -> (N_total, contrastive_dim)
+        z_q = self.proj_q(pooled_fq)
+
+        # Roman branch
+        z_k = None
+        if features_k is not None:
+            pooled_fk = self.feature_pooler(
+                [features_k[f] for f in self.box_in_features], boxes
+            )
+            pooled_fk = torch.flatten(pooled_fk, 1)
+            z_k = self.proj_k(pooled_fk)
+
+        # Split flat tensors back into per-img slices and attach to Instances
+        z_q_per_img     = z_q.split(num_per_img, dim=0)
+        z_k_per_img     = z_k.split(num_per_img, dim=0) if z_k is not None else None
+        for i, inst in enumerate(instances):
+            # keep embeddings on the same device as detection fields so
+            # detector_postprocess/Instances indexing stays device-consistent 
+            # otherwise error
+            inst.pred_embeddings_q = z_q_per_img[i]
+            if z_k_per_img is not None:
+                inst.pred_embeddings_k = z_k_per_img[i]
+        return instances
 

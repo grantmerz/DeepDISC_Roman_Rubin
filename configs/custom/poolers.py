@@ -5,6 +5,8 @@ import torch
 from torch import nn
 from torchvision.ops import RoIPool
 
+from detectron2.modeling.poolers import ROIPooler
+from detectron2.modeling.backbone.fpn import LastLevelMaxPool
 from detectron2.layers import ROIAlign, ROIAlignRotated, cat, nonzero_tuple, shapes_to_tensor
 from detectron2.structures import Boxes
 from detectron2.utils.tracing import assert_fx_safe, is_fx_tracing
@@ -275,3 +277,109 @@ class ScaledROIPooler(nn.Module):
             output[inds] = pooler(x_level, pooler_fmt_boxes_level)
 
         return output
+
+class NonPowerOf2ROIPooler(ROIPooler):
+    """ROIPooler that supports non-power-of-2 feature strides.
+
+    Detectron2's ROIPooler asserts that all feature strides are powers of 2,
+    which fails for patch_size=13 Swin (strides [13, 26, 52, 104]).
+    This subclass bypasses ROIPooler.__init__ to skip that assertion,
+    replicates the setup, and inherits the forward() pass unchanged.
+    """
+
+    def __init__(
+        self,
+        output_size,
+        scales,
+        sampling_ratio,
+        pooler_type,
+        canonical_box_size=224,
+        canonical_level=4,
+    ):
+        # Jump straight to nn.Module.__init__ to skip ROIPooler's 
+        # power-of-2 assertion in ROIPooler.__init__
+        # basically skip to grandparent class's init 
+        # since we don't want the parent class's init bc of the assertion
+        nn.Module.__init__(self)
+
+        if isinstance(output_size, int):
+            output_size = (output_size, output_size)
+        assert len(output_size) == 2
+        assert isinstance(output_size[0], int) and isinstance(output_size[1], int)
+        self.output_size = output_size
+
+        if pooler_type == "ROIAlign":
+            self.level_poolers = nn.ModuleList(
+                ROIAlign(
+                    output_size, spatial_scale=scale, sampling_ratio=sampling_ratio, aligned=False
+                )
+                for scale in scales
+            )
+        elif pooler_type == "ROIAlignV2":
+            self.level_poolers = nn.ModuleList(
+                ROIAlign(
+                    output_size, spatial_scale=scale, sampling_ratio=sampling_ratio, aligned=True
+                )
+                for scale in scales
+            )
+        elif pooler_type == "ROIPool":
+            self.level_poolers = nn.ModuleList(
+                RoIPool(output_size, spatial_scale=scale) for scale in scales
+            )
+        elif pooler_type == "ROIAlignRotated":
+            self.level_poolers = nn.ModuleList(
+                ROIAlignRotated(output_size, spatial_scale=scale, sampling_ratio=sampling_ratio)
+                for scale in scales
+            )
+        else:
+            raise ValueError("Unknown pooler type: {}".format(pooler_type))
+        
+        # Map scale (defined as 1 / stride) to its feature map level 
+        # Round log2(scale) to the nearest integer so non-power-of-2 strides get
+        # contiguous level indices.  For power-of-2 strides this is identical to
+        # the original int() cast.  Example for scales = (1/13, 1/26, 1/52, 1/104):
+        #   round(-log2(1/13)) = round(3.70) = 4 --> min_level=4
+        #   round(-log2(1/104)) = round(6.70) = 7 --> max_level=7
+        min_level = -(math.log2(scales[0]))
+        max_level = -(math.log2(scales[-1]))
+        # Round instead of casting so non-power-of-2 strides get idxs
+        # that map to their nearest power-of-2 equivalent.
+        # Example: stride 52 ≈ 2^5.7 --> level 6 (like stride 64), 
+        # not level 5 (stride 32). For power-of-2 strides 
+        # this is identical to int() cast. This ensures boxes land 
+        # at the correct pyramid level. 
+        # Using int() would systematically bias all level assignments downward, 
+        # breaking the geometric relationship between box size and feature resolution
+        
+        # What if we used int()?
+        # self.min_level = int(-math.log2(1/13))   = 3
+        # self.max_level = int(-math.log2(1/104))  = 6
+        # Then with canonical_level=6:
+        # A 224px box: level 6 --> index 6 - min_level = 6 - 3 = 3 --> pools from stride 104 (the coarsest map!) 
+        # This is backwards: 224px boxes should go to a middle-resolution feature, not the coarsest one
+
+        # With round():
+        # self.min_level = round(-math.log2(1/13))   = 4
+        # self.max_level = round(-math.log2(1/104))  = 7
+        # Now with canonical_level=6:
+        # A 224px box: level 6 --> index 6 - min_level = 6 - 4 = 2 --> pools from stride 52 (middle of pyramid) 
+        self.min_level = round(min_level)
+        self.max_level = round(max_level)
+        assert (
+            len(scales) == self.max_level - self.min_level + 1
+        ), "[NonPowerOf2ROIPooler] Scales do not form a contiguous pyramid!"
+        assert 0 <= self.min_level <= self.max_level
+        self.canonical_level = canonical_level
+        assert canonical_box_size > 0
+        self.canonical_box_size = canonical_box_size
+
+class CustomLastLevelMaxPool(LastLevelMaxPool):
+    """LastLevelMaxPool with a configurable in_feature
+    The default LastLevelMaxPool hardcodes in_feature='p5'. With patch_size=13,
+    FPN outputs ["p3","p4","p5","p6"] where p6 is the coarsest (stride 104).
+    Taking p5 (stride 52) would produce a 5x5 map that duplicates p6; taking p6
+    produces a genuine p7 at stride 208.
+    """
+    def __init__(self, in_feature="p6"):
+        super().__init__()
+        self.in_feature = in_feature

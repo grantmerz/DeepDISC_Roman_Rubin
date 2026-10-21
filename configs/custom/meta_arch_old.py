@@ -395,6 +395,13 @@ class FeatureMapMLP(nn.Module):
         shapes = [(channel,(square_pad+s-1)//s,(square_pad+s-1)//s) for s in strides]
         #use all feature maps
         #self.fcls = {}
+        # Processed all feature maps individually through separate 
+        # linear layers, then aggregated. 
+        # multi-level aggregation approach:
+        # - Created separate linear layers for each feature map level
+        # - Flattened and processed each level through its corresponding layer
+        # - Stacked outputs and summed them, then passed through final MLP
+        
         #for i,f in enumerate(in_features.keys()):
         #    self.fcls[f] = nn.Linear(np.prod(shapes[i]),hidden_dim)
         #self.fcl_final = nn.Sequential(nn.Linear(hidden_dim,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,dim)),
@@ -413,6 +420,12 @@ class FeatureMapMLP(nn.Module):
         # each through a fully connected layer.
         
         #f_outs = []
+        # Processed all feature map levels 
+        # and aggregated their outputs
+        # - Iterate through all feature maps in features dict
+        # - Flatten each and pass through corresponding linear layer
+        # - Stack all outputs and sum across the stack
+        # - Pass aggregated features through final MLP
 
         #for f in self.in_features:
         #    f_out=self.fcls[f](features[f].flatten())

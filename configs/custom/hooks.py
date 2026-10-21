@@ -1,6 +1,8 @@
 import time
 import numpy as np
 import torch
+import os
+import json
 import torch.distributed as dist
 
 from detectron2.utils.logger import setup_logger
@@ -9,6 +11,52 @@ from detectron2.utils import comm
 from detectron2.utils.logger import setup_logger
 
 from deepdisc.astrodet.detectron import LossEvalHook
+
+
+def _save_loss_histories(trainer, output_dir, run_name):
+    """Persist the current training and validation loss histories."""
+    if not comm.is_main_process():
+        return
+    os.makedirs(output_dir, exist_ok=True)
+    def _write_json(path, payload):
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w") as json_file:
+            json.dump(payload, json_file)
+        os.replace(tmp_path, path)
+    _write_json(
+        os.path.join(output_dir, f"{run_name}_losses.json"),
+        getattr(trainer, "lossdict_epochs", {}),
+    )
+    _write_json(
+        os.path.join(output_dir, f"{run_name}_val_losses.json"),
+        getattr(trainer, "vallossdict_epochs", {}),
+    )
+
+class LossHistorySaveHook(HookBase):
+    """Periodically flush loss histories so interrupted runs keep progress."""
+    def __init__(self, output_dir, run_name, save_period):
+        self._output_dir = output_dir
+        self._run_name = run_name
+        self._save_period = max(1, save_period)
+    def after_step(self):
+        if comm.is_main_process() and self.trainer.iter % self._save_period == 0:
+            _save_loss_histories(self.trainer, self._output_dir, self._run_name)
+    def after_train(self):
+        _save_loss_histories(self.trainer, self._output_dir, self._run_name)
+
+def return_lossHistoryHook(output_dir, run_name, save_period):
+    """
+    Returns a hook for saving loss histories periodically during training
+    Parameters    ----------
+    output_dir : str
+        the directory to save the loss histories
+    run_name : str
+        the name of the run
+    save_period : int
+        the frequency with which to save the loss histories (in iters)
+    """
+    lossHistoryHook = LossHistorySaveHook(output_dir, run_name, save_period)
+    return lossHistoryHook
 
 class TimedLossEvalHook(LossEvalHook):
 
@@ -37,6 +85,12 @@ class TimedLossEvalHook(LossEvalHook):
         # Copying inference_on_dataset from evaluator.py
         total = len(self._data_loader)
         self.logger.info(f"Starting validation on: {total} batches")
+        # clear cached but unused memory before validation
+        # prevents fragmentation-induced OOM on first warmup batch
+        torch.cuda.empty_cache()
+        
+        comm.synchronize()  # ensure all ranks enter val together
+     
         num_warmup = min(5, total - 1)
         
         start_time = time.perf_counter()
@@ -63,6 +117,9 @@ class TimedLossEvalHook(LossEvalHook):
                 loss_batch, metrics_dict = self._get_loss(inputs)
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
+                
+                comm.synchronize()  # keep ranks in lockstep per batch
+                
                 infer_time = time.perf_counter() - infer_start
                 
                 if idx >= num_warmup:

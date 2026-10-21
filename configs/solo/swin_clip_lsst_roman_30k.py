@@ -46,7 +46,9 @@ from deepdisc.data_format.augment_image import dc2_train_augs
 # Overrides of the template COCO config
 # This is the cascade mask rcnn of an ImageNet-swin_base_patch4_window7_224_21k model
 # that's been converted to the CLIP dual-backbone format using convert_checkpoint.py
-train.init_checkpoint = "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_clip_roman_rubin_model.pkl"
+# train.init_checkpoint = "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_clip_roman_rubin_model.pkl"
+# train.init_checkpoint = "/u/yse2/lsst_runs/clip5_30k_4h200_bs192_ep15/clip5_30k_4h200_bs192_ep15.pth"
+train.init_checkpoint = "/u/yse2/lsst_runs/clip5_30k_4h200_bs192_ep15_lprj/clip5_30k_4h200_bs192_ep15_lprj.pth"
 # for TimedLazyAstroTrainer (all in iters)
 train.timing_report_period = steps_per_epoch // 2 # report every n iters (for testing, 5)
 train.timing_rolling_window_size = steps_per_epoch // 2 # average over last n iters (for testing, 5)
@@ -57,7 +59,7 @@ dataloader.train.total_batch_size = bs
 # dataloader.train.num_workers = 16
 # when bs=96, bs * 6 but when bs=144, bs * 6 crashed so using bs * 4 and for bs=192, bs * 2
 dataloader.test.total_batch_size = bs # * 2 # higher since no gradients being calculated
-dataloader.test.num_workers = 16
+dataloader.test.num_workers = 8
 
 model.proposal_generator.anchor_generator.sizes = [[8], [16], [32], [64], [128]]
 model.roi_heads.num_classes = numclasses

@@ -8,9 +8,8 @@ from detectron2.data import detection_utils as utils
 from detectron2.data.common import DatasetFromList, MapDataset
 from detectron2.data.samplers import InferenceSampler
 from detectron2.data.build import trivial_batch_collator, get_detection_dataset_dicts
-import os
-from .transforms import LanczosResize
 from astropy.wcs import WCS
+from .transforms import LanczosResize
 import numpy as np
 
 class FileNameMapper(DictMapper):
@@ -97,14 +96,11 @@ def rescale_transform(tfm, shape):
         )
         return tfm
 
-
-
-class ResizeCombinedMapper(DataMapper):
+class ResizeMapper(DataMapper):
     """
-    Data mapper for upsampling LSST images and 
-    combining with Roman.  Also upsamples annotations.
+    Data mapper for upsampling LSST images. Also upsamples annotations.
     """
-    def __init__(self, keypoint_hflip_indices=None, cache_dir='.', *args, **kwargs):
+    def __init__(self, *args, keypoint_hflip_indices=None, cache_dir='.', **kwargs):
         # Pickling with multiprocessing can cause issues
         # so this ensures the keypoint_hflip_indices is a list 
         if keypoint_hflip_indices is not None:
@@ -112,11 +108,10 @@ class ResizeCombinedMapper(DataMapper):
         self.keypoint_hflip_indices = keypoint_hflip_indices
         self.cache_dir = cache_dir
         super().__init__(*args, **kwargs)
-
  
     def map_data(self, dataset_dict):
         """
-        Map COCO dict data to format for CLIP + detection training
+        Map COCO dict data to format for Combined training
         
         Parameters
         ----------
@@ -129,24 +124,19 @@ class ResizeCombinedMapper(DataMapper):
         """
         dataset_dict = copy.deepcopy(dataset_dict)
         rubin_fns = self.km(dataset_dict)
+        # roman_fns = rubin_fns.replace('lsst_data', 'roman_data')
         roman_fns = rubin_fns.replace('lsst_data', 'truth-roman').replace('/truth/','/')
-        filenames = {
-            'rubin_path': rubin_fns,
-            'roman_path': roman_fns
-        }
-        # loading in both imgs using DualRomanRubinImageReader
-        rubin_imgs, roman_imgs = self.IR(filenames)
-        C_rubin=rubin_imgs.shape[-1]
-        C_roman=roman_imgs.shape[-1]
-        comb_img = torch.empty((C_rubin+C_roman, 512, 512), dtype=torch.float32)
-
-        #wcs roman has been saved in the lsst dict
+        # for grant m: roman_fns = rubin_fns.replace('lsst_data', 'truth-roman').replace('/truth/','/')
+        # loading in Rubin imgs using RomanRubinImageReader
+        rubin_imgs = self.IR(rubin_fns)
+        # C_rubin=rubin_imgs.shape[-1]
+        # ups_img = torch.empty((C_rubin, 512, 512), dtype=torch.float32)
+        # wcs roman has been saved in the lsst dict
         wcs_rubin = WCS(dataset_dict['wcs'])
         wcs_roman = WCS(dataset_dict['wcs_roman'])
         new_h, new_w = 512, 512
-        initial_resize = LanczosResize(new_h, new_w,wcs_rubin,wcs_roman,rubin_fns,roman_fns,self.cache_dir)
+        initial_resize = LanczosResize(new_h, new_w, wcs_rubin, wcs_roman, rubin_fns, roman_fns, self.cache_dir)
         
-
         # --- Synchronized spatial augmentations ---
         # Sample augmentations ONCE from Rubin, then rebuild the same
         # logical operations for Roman's dimensions so that ROIs stay
@@ -159,8 +149,110 @@ class ResizeCombinedMapper(DataMapper):
         # Apply to Rubin (samples random choices & modifies auginput in place)
         # Add on the initial resize transform
         transform_rubin = initial_resize(rubin_auginput)         
-        transform_rubin+=rubin_augs(rubin_auginput)
-        #Speed optimization
+        transform_rubin += rubin_augs(rubin_auginput)
+        # Speed optimization
+        rubin_img = torch.as_tensor(np.ascontiguousarray(rubin_auginput.image.transpose(2, 0, 1)))
+        #transform annotations
+        annos = [
+            utils.transform_instance_annotations(
+                annotation, [transform_rubin], rubin_img.shape[1:], keypoint_hflip_indices=self.keypoint_hflip_indices
+            )
+            for annotation in dataset_dict.pop('annotations')
+        ] 
+        instances = utils.annotations_to_instances(annos, rubin_img.shape[1:])
+        # add obj_id field so we can track which objs match to which proposals across modalities
+        # label_and_sample_propsals will then copy it onto sampled proposals thru:
+        #  props_per_img.set(trg_name, trg_vale[sampled_targets])
+        # for any field starting with gt_ that isn't already set on proposals
+        instances.gt_objid = torch.tensor([ann['obj_id'] for ann in annos], dtype=torch.int64)
+        instances = utils.filter_empty_instances(instances)
+        result = {
+            'image': rubin_img,
+            'height': rubin_img.shape[1],
+            'width': rubin_img.shape[2],
+            'image_id': dataset_dict['image_id'],
+            'instances': instances,
+            'annotations':annos
+        }
+        return result
+
+class ResizeTestMapper(ResizeMapper):
+    """
+    Data mapper for Resize testing to add file names and WCS info in the dataset
+    This mapper builds on top of ResizeMapper and returns file names and WCS info as well.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def map_data(self, dataset_dict):
+        # calling the map_data method from the parent class (ResizeCombinedMapper)
+        # This will do all the image loading, augmentations, and instance transformations
+        d = super().map_data(dataset_dict)
+        d['file_name'] = dataset_dict['file_name']
+        d['wcs'] = dataset_dict['wcs_roman'] # since imgs are rescaled to Roman's WCS, we return that one for downstream use in inference 
+        return d
+
+class ResizeCombinedMapper(DataMapper):
+    """
+    Data mapper for upsampling LSST images and 
+    combining with Roman.  Also upsamples annotations.
+    """
+    def __init__(self, *args, keypoint_hflip_indices=None, cache_dir='.', **kwargs):
+        # Pickling with multiprocessing can cause issues
+        # so this ensures the keypoint_hflip_indices is a list 
+        if keypoint_hflip_indices is not None:
+            keypoint_hflip_indices = list(keypoint_hflip_indices)
+        self.keypoint_hflip_indices = keypoint_hflip_indices
+        self.cache_dir = cache_dir
+        super().__init__(*args, **kwargs)
+ 
+    def map_data(self, dataset_dict):
+        """
+        Map COCO dict data to format for Combined training
+        
+        Parameters
+        ----------
+        dataset_dict: dict
+            COCO formatted metadata with LSST paths
+            
+        Returns
+        -------
+        dict with 'rubin_image', 'roman_image', and optionally 'instances'
+        """
+        dataset_dict = copy.deepcopy(dataset_dict)
+        rubin_fns = self.km(dataset_dict)
+        # roman_fns = rubin_fns.replace('lsst_data', 'roman_data')
+        roman_fns = rubin_fns.replace('lsst_data', 'truth-roman').replace('/truth/','/')
+        # for grant m: roman_fns = rubin_fns.replace('lsst_data', 'truth-roman').replace('/truth/','/')
+        filenames = {
+            'rubin_path': rubin_fns,
+            'roman_path': roman_fns
+        }
+        # loading in both imgs using DualRomanRubinImageReader
+        rubin_imgs, roman_imgs = self.IR(filenames)
+        C_rubin=rubin_imgs.shape[-1]
+        C_roman=roman_imgs.shape[-1]
+        comb_img = torch.empty((C_rubin+C_roman, 512, 512), dtype=torch.float32)
+        # wcs roman has been saved in the lsst dict
+        wcs_rubin = WCS(dataset_dict['wcs'])
+        wcs_roman = WCS(dataset_dict['wcs_roman'])
+        new_h, new_w = 512, 512
+        initial_resize = LanczosResize(new_h, new_w, wcs_rubin, wcs_roman, rubin_fns, roman_fns, self.cache_dir)
+        
+        # --- Synchronized spatial augmentations ---
+        # Sample augmentations ONCE from Rubin, then rebuild the same
+        # logical operations for Roman's dimensions so that ROIs stay
+        # spatially aligned across modalities
+        rubin_auginput = T.AugInput(rubin_imgs)
+        if self.augmentations is not None:
+            rubin_augs = self.augmentations(rubin_imgs)
+        else:
+            rubin_augs = T.AugmentationList([])
+        # Apply to Rubin (samples random choices & modifies auginput in place)
+        # Add on the initial resize transform
+        transform_rubin = initial_resize(rubin_auginput)         
+        transform_rubin += rubin_augs(rubin_auginput)
+        # Speed optimization
         rubin_img = torch.as_tensor(np.ascontiguousarray(rubin_auginput.image.transpose(2, 0, 1)))
 
         # Rebuild the same transforms for Roman's (h, w) and apply
@@ -184,23 +276,22 @@ class ResizeCombinedMapper(DataMapper):
             )
             for annotation in dataset_dict.pop('annotations')
         ] 
-
         instances = utils.annotations_to_instances(annos, comb_img.shape[1:])
+        # add obj_id field so we can track which objs match to which proposals across modalities
+        # label_and_sample_propsals will then copy it onto sampled proposals thru:
+        #  props_per_img.set(trg_name, trg_vale[sampled_targets])
+        # for any field starting with gt_ that isn't already set on proposals
+        instances.gt_objid = torch.tensor([ann['obj_id'] for ann in annos], dtype=torch.int64)
         instances = utils.filter_empty_instances(instances)
         result = {
             'image': comb_img,
-            #'image_roman': roman_img,
             'height': comb_img.shape[1],
             'width': comb_img.shape[2],
             'image_id': dataset_dict['image_id'],
             'instances': instances,
             'annotations':annos
         }
-
         return result
-
-
-
 
 # Mapper to resize Rubin and combine with Roman
 class ResizeCombinedandLSSTMapper(DataMapper):
@@ -211,7 +302,7 @@ class ResizeCombinedandLSSTMapper(DataMapper):
     Includes the native-scale LSST image
 
     """
-    def __init__(self, keypoint_hflip_indices=None, cache_dir='.', *args, **kwargs):
+    def __init__(self, *args, keypoint_hflip_indices=None, cache_dir='.', **kwargs):
         # Pickling with multiprocessing can cause issues
         # so this ensures the keypoint_hflip_indices is a list 
         if keypoint_hflip_indices is not None:
@@ -238,6 +329,7 @@ class ResizeCombinedandLSSTMapper(DataMapper):
         dataset_dict = copy.deepcopy(dataset_dict)
         rubin_fns = self.km(dataset_dict)
         roman_fns = rubin_fns.replace('lsst_data', 'truth-roman').replace('/truth/','/')
+        # roman_fns = rubin_fns.replace('lsst_data', 'roman_data')
         filenames = {
             'rubin_path': rubin_fns,
             'roman_path': roman_fns
@@ -253,8 +345,7 @@ class ResizeCombinedandLSSTMapper(DataMapper):
         wcs_roman = WCS(dataset_dict['wcs_roman'])
         new_h, new_w = 512, 512
         initial_resize = LanczosResize(new_h, new_w,wcs_rubin,wcs_roman,rubin_fns,roman_fns,self.cache_dir)
-        
-
+    
         # --- Synchronized spatial augmentations ---
         # Sample augmentations ONCE from Rubin, then rebuild the same
         # logical operations for Roman's dimensions so that ROIs stay
@@ -270,10 +361,9 @@ class ResizeCombinedandLSSTMapper(DataMapper):
         # Apply to Rubin (samples random choices & modifies auginput in place)
         # Add on the initial resize transform
         transform_rubin_resize = initial_resize(rubin_auginput_resize)         
-        transform_rubin_resize+=rubin_augs(rubin_auginput_resize)
-        
+        transform_rubin_resize += rubin_augs(rubin_auginput_resize)
         #Separately apply the same spatial transforms to the original rubin image (no resizing) 
-        transform_rubin=rubin_augs(rubin_auginput)
+        transform_rubin = rubin_augs(rubin_auginput)
 
         #Speed optimization
         rubin_img = torch.as_tensor(np.ascontiguousarray(rubin_auginput.image.transpose(2, 0, 1)))
@@ -302,6 +392,11 @@ class ResizeCombinedandLSSTMapper(DataMapper):
         ] 
 
         instances = utils.annotations_to_instances(annos, comb_img.shape[1:])
+        # add obj_id field so we can track which objs match to which proposals across modalities
+        # label_and_sample_propsals will then copy it onto sampled proposals thru:
+        #  props_per_img.set(trg_name, trg_vale[sampled_targets])
+        # for any field starting with gt_ that isn't already set on proposals
+        instances.gt_objid = torch.tensor([ann['obj_id'] for ann in annos], dtype=torch.int64)
         instances = utils.filter_empty_instances(instances)
         result = {
             'image_combined': comb_img,
@@ -312,8 +407,104 @@ class ResizeCombinedandLSSTMapper(DataMapper):
             'instances': instances,
             'annotations':annos
         }
-
         return result
+
+class ResizeCombinedTestMapper(ResizeCombinedMapper):
+    """
+    Data mapper for Resize testing to add file names and WCS info in the dataset
+    This mapper builds on top of ResizeCombinedMapper and returns file names and WCS info as well.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def map_data(self, dataset_dict):
+        # calling the map_data method from the parent class (ResizeCombinedMapper)
+        # This will do all the image loading, augmentations, and instance transformations
+        d = super().map_data(dataset_dict)
+        d['file_name'] = dataset_dict['file_name']
+        d['wcs'] = dataset_dict['wcs_roman'] # since imgs are rescaled to Roman's WCS, we return that one for downstream use in inference 
+        return d
+
+class ResizeCombinedMaskedRomanMapper(ResizeCombinedTestMapper):
+    """
+    Masks Roman out completely to see how model's performance gets affected when given nonsensical Roman data
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def map_data(self, dataset_dict):
+        # calling the map_data method from the parent class (ResizeCombinedTestMapper)
+        # This will do all the image loading, augmentations, and instance transformations
+        d = super().map_data(dataset_dict)
+        d['image'][6:, :, :] = torch.tensor([1.0947377681732178, 1.2559534311294556, 1.3356200456619263]).view(3, 1, 1)
+        return d
+
+class ResizeCombinedMaskedRoman2Mapper(ResizeCombinedTestMapper):
+    """
+    Masks Roman last two channels completely to see how model's performance gets affected when given incomplete Roman data
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def map_data(self, dataset_dict):
+        # calling the map_data method from the parent class (ResizeCombinedTestMapper)
+        # This will do all the image loading, augmentations, and instance transformations
+        d = super().map_data(dataset_dict)
+        d['image'][7:, :, :] = torch.tensor([1.2559534311294556, 1.3356200456619263]).view(2, 1, 1)
+        return d
+
+
+class ModalityDropoutMapper(ResizeCombinedMapper):
+    """
+    Randomly masks Roman channels by replacing them with provided means
+    With prob dropout_prob (default 0.5), the last three channels
+    in the combined image tensor are set to roman_means
+    """
+    def __init__(
+        self,
+        *args,
+        roman_means=None,
+        dropout_prob=0.5,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        if roman_means is None:
+            raise ValueError("roman_means must be provided and contain 3 values")
+        if len(roman_means) != 3:
+            raise ValueError(
+                f"roman_means must have length 3, got {len(roman_means)}."
+            )
+        self.roman_means = [float(v) for v in roman_means]
+        self.dropout_prob = float(dropout_prob)
+
+    def map_data(self, dataset_dict):
+        # This will do all the image loading, augmentations, and instance transformations
+        d = super().map_data(dataset_dict)
+        if np.random.rand() < self.dropout_prob:
+            mean_tensor = torch.tensor(
+                self.roman_means,
+                dtype=d['image'].dtype,
+                device=d['image'].device,
+            ).view(3, 1, 1)
+            d['image'][-3:, :, :] = mean_tensor
+        return d
+
+class ResizeCombinedAndLSSTTestMapper(ResizeCombinedandLSSTMapper):
+    """
+    Data mapper for Resize testing to add file names and WCS info in the dataset
+    This mapper builds on top of ResizeCombinedMapper and returns file names and WCS info as well.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def map_data(self, dataset_dict):
+        # calling the map_data method from the parent class (ResizeCombinedandLSSTMapper)
+        # This will do all the image loading, augmentations, and instance transformations
+        d = super().map_data(dataset_dict)
+        d['file_name'] = dataset_dict['file_name']
+        d['wcs'] = dataset_dict['wcs']
+        d['wcs_roman'] = dataset_dict['wcs_roman']
+        return d
 
 class CLIPMapper(DataMapper):
     """
@@ -465,6 +656,23 @@ class CLIPTestMapper(CLIPEvalMapper):
     
     def map_data(self, dataset_dict):
         # calling the map_data method from the parent class (CLIPEvalMapper)
+        # This will do all the image loading, augmentations, and instance transformations
+        d = super().map_data(dataset_dict)
+        d['file_name'] = dataset_dict['file_name']
+        d['wcs'] = dataset_dict['wcs']
+        return d
+
+class CLIPTestWithRomanMapper(CLIPMapper):
+    """
+    Data mapper for CLIP testing with Roman-LSST pairs.
+    
+    This mapper builds on top of CLIPMapper and returns file names and WCS info as well.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def map_data(self, dataset_dict):
+        # calling the map_data method from the parent class (CLIPMapper)
         # This will do all the image loading, augmentations, and instance transformations
         d = super().map_data(dataset_dict)
         d['file_name'] = dataset_dict['file_name']
