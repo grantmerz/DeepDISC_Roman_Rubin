@@ -30,7 +30,7 @@ from detectron2.checkpoint import DetectionCheckpointer
 
 # DeepDisc imports
 # COPY CUSTOM MAPPERS CODE FROM DeepDISC Roman Rubin repo to your configs/custom/mappers.py file
-from custom.mappers import DP1Mapper
+from custom.mappers import FileNameWCSMapper
 from deepdisc.data_format.register_data import register_data_set
 from deepdisc.model.loaders import return_test_loader
 
@@ -85,7 +85,7 @@ def inference(num_gpus, cfg_file, model_path, test_data_fn, output_dir,
             cfg[key] = cfg.MISC[key]
         cfg.DATASETS.TEST = "test"
         cfg.dataloader.augs = None # no augs for test set since we want preds on OG images
-        cfg.dataloader.test.mapper = DP1Mapper # setting test DataLoader's mapper so that filename gets added to each sample
+        cfg.dataloader.test.mapper = FileNameWCSMapper # setting test DataLoader's mapper so that filename gets added to each sample
         # model params
         cfg.train.init_checkpoint = model_path
         # register test dataset on ALL processes b/c each GPU needs access to the dataset
