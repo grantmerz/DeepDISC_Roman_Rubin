@@ -35,12 +35,12 @@ done
 
 echo "EMB_MODES: ${EMB_MODES[*]}"
 
-cd ~/DeepDISC_Roman_Rubin/
+cd "$SLURM_SUBMIT_DIR"
 
 for EMB_MODE in "${EMB_MODES[@]}"; do
     export EMB_MODE
     echo "Running EMB_MODE: $EMB_MODE"
-    python coherence.py
+    python embed_analysis/coherence.py
 done
 
 END_TIME=$(date +"%Y-%m-%dT%H:%M:%S")

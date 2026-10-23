@@ -13,6 +13,6 @@
 #SBATCH --mail-user=yse2@illinois.edu
 #SBATCH --mail-type=ALL
 
-cd ~
+cd "$SLURM_SUBMIT_DIR"
 # python data_processing/calc_pixel_mean_std.py --root_dir /u/yse2/lsst_data/ --anns_dir annotations --snr_lvl 5 --num_channels 3 --max_workers 32 --using_roman
 python data_processing/calc_pixel_mean_std.py --root_dir /u/yse2/lsst_data/ --anns_dir annotations --snr_lvl 5 --num_channels 6 --max_workers 32 --upsample_lsst

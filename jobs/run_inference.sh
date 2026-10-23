@@ -31,7 +31,7 @@ else
 fi
 echo "MASTER_PORT: $MASTER_PORT"
 
-cd ~
+cd "$SLURM_SUBMIT_DIR"
 # GPU and CUDA checks
 # clears GPU cache to avoid Cublas errors
 echo "Checking CUDA and GPU status..."
@@ -55,61 +55,61 @@ ANNS_FOLDER="${ANNS_FOLDER:-annotations_lvl5}"
 # locations of config and data files are determined by model type defaults if not provided
 case $MODEL_TYPE in
     "standard_30k")
-        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_lsst_30k.py"
+        CFG_FILE="configs/solo/swin_lsst_30k.py"
         RUN_NAME="lsst5_30k_4h200_bs192_ep50"
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints.json"
         ;;
     "standard_30k_pad")
-        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_lsst_30k_pad.py"
+        CFG_FILE="configs/solo/swin_lsst_30k_pad.py"
         RUN_NAME="lsst5_pad_30k_4h200_bs192_ep50"
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints.json"
         ;;
     "standard_all")
-        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_lsst_100k.py"
+        CFG_FILE="configs/solo/swin_lsst_100k.py"
         RUN_NAME="lsst5_all_4h200_bs192_ep20"
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_keypoints.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_keypoints.json"
         ;;
     "clip_30k")
-        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py"
+        CFG_FILE="configs/solo/swin_clip_lsst_roman_30k.py"
         RUN_NAME="clip5_30k_4h200_bs64_ep50"
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints.json"
         ;;
     "clip_30k_emb")
-        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py"
+        CFG_FILE="configs/solo/swin_clip_lsst_roman_30k.py"
         RUN_NAME="clip5_30k_4h200_bs192_ep15_lprj"
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints.json"
         ;;
     "clip_all")
-        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_100k.py"
+        CFG_FILE="configs/solo/swin_clip_lsst_roman_100k.py"
         RUN_NAME="clip5_all_4h200_bs64_ep20"
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_keypoints.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_keypoints.json"
         ;;
     "ups_30k")
-        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_ups_lsst_30k.py"
+        CFG_FILE="configs/solo/swin_ups_lsst_30k.py"
         RUN_NAME="lsst5_ups_30k_4h200_bs192_ep50"
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints_wcs.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints_wcs.json"
         ;;
     "ups_30k_ps13")
-        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_ps13_ups_lsst_30k.py"
+        CFG_FILE="configs/solo/swin_ps13_ups_lsst_30k.py"
         RUN_NAME="lsst5_ps13_ups_30k_4h200_bs192_ep50"
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints_wcs.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints_wcs.json"
         ;;
     "comb_30k")
-        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_comb_lsst_roman_30k.py"
+        CFG_FILE="configs/solo/swin_comb_lsst_roman_30k.py"
         RUN_NAME="comb_30k_4h200_bs144_ep50"
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints_wcs.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints_wcs.json"
         ;;
     "distill_30k")
-        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_distill_lsst_roman_30k.py"
+        CFG_FILE="configs/solo/swin_distill_lsst_roman_30k.py"
         RUN_NAME="distill_30k_4h200_bs192_ep50"
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints.json"

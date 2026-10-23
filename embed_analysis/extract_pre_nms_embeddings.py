@@ -41,7 +41,8 @@ import socket
 import numpy as np
 
 # allows us to import from the custom configs directory w/o affecting deepdisc library imports
-sys.path.insert(0, '/u/yse2/deepdisc/configs')
+CONFIG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'configs'))
+sys.path.insert(0, CONFIG_DIR)
 
 # Detectron2 setup
 import detectron2.utils.comm as comm
@@ -794,19 +795,19 @@ if __name__ == "__main__":
     anns_folder = 'annotations_lvl5'
     RUN_DEFAULTS = {
         "clip5_30k_4h200_bs192_ep15": {
-            "cfgfile": "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py",
+            "cfgfile": os.path.join(CONFIG_DIR, "solo/swin_clip_lsst_roman_30k.py"),
         },
         "clip5_30k_4h200_bs192_ep15_lprj": {
-            "cfgfile": "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py",
+            "cfgfile": os.path.join(CONFIG_DIR, "solo/swin_clip_lsst_roman_30k.py"),
         },
         "clip5_30k_4h200_bs64_ep50": {
-            "cfgfile": "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k_og.py",
+            "cfgfile": os.path.join(CONFIG_DIR, "solo/swin_clip_lsst_roman_30k_og.py"),
         },
         "clip5_flatten_30k_4h200_bs64_ep15": {
-            "cfgfile": "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k_flatten.py",
+            "cfgfile": os.path.join(CONFIG_DIR, "solo/swin_clip_lsst_roman_30k_flatten.py"),
         },
         "clip5_flatten_30k_4h200_bs64_ep15_resume": {
-            "cfgfile": "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k_flatten.py",
+            "cfgfile": os.path.join(CONFIG_DIR, "solo/swin_clip_lsst_roman_30k_flatten.py"),
         },
     }
     args = parse_args()

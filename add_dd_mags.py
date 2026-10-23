@@ -63,7 +63,8 @@ import numpy as np
 import pandas as pd
 import pycocotools.mask as mask_util
 # allows us to import from the custom configs directory w/o affecting deepdisc library imports
-sys.path.insert(0, '/u/yse2/deepdisc/configs')
+CONFIG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), 'configs'))
+sys.path.insert(0, CONFIG_DIR)
 from custom.transforms import LanczosResizeTransform
 
 logger = logging.getLogger(__name__)

@@ -29,7 +29,7 @@ echo "GPUs: $CUDA_VISIBLE_DEVICES"
 # source /projects/bdsp/miniconda3/etc/profile.d/conda.sh
 # conda activate /projects/bdsp/miniconda3/envs/ddbtknv
 
-cd /u/yse2/DeepDISC_Roman_Rubin
+cd "$SLURM_SUBMIT_DIR"
 
 # GPU and CUDA checks
 # clears GPU cache to avoid Cublas errors

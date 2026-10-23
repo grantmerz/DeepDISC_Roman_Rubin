@@ -13,7 +13,7 @@ echo "Job ID: $SLURM_JOB_ID, Task ID: $SLURM_ARRAY_TASK_ID"
 
 module load conda_base
 conda activate deepdisc
-cd ~
+cd "$SLURM_SUBMIT_DIR"
 
 # Run this in a terminal before submitting job and running the script
 # echo "Splitting tiles into 5 files for the job array..."
@@ -23,6 +23,6 @@ cd ~
 CURRENT_TILE_FILE="tile_lists_split/tile_list_$SLURM_ARRAY_TASK_ID"
 echo "This task will process 140 (700/5) tiles from: $CURRENT_TILE_FILE"
 
-python prepare_roman_data.py --tile_list "$CURRENT_TILE_FILE"
+python data_processing/roman/prepare_roman_data.py --tile_list "$CURRENT_TILE_FILE"
 
 echo "Task $SLURM_ARRAY_TASK_ID has completed."

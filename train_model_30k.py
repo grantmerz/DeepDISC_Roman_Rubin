@@ -18,7 +18,7 @@ import os
 import time
 import sys
 # allows us to import from the custom configs directory w/o affecting deepdisc library imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'deepdisc/configs')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'configs')))
 from custom.trainers import return_timed_lazy_trainer, EarlyStoppingException
 from custom.hooks import return_timed_evallossHook, return_early_stoppingHook
 
