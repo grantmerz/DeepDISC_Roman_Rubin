@@ -9,7 +9,7 @@ metrics, tables and figures in the paper.
 | --- | --- |
 | DESC project | 378 |
 | Internal review | [DESC-PUB-00275](https://confluence.slac.stanford.edu/spaces/LSSTDESC/pages/747609133/DESC-PUB-00275) (DESC members only) |
-| Software Summary Document (DESC software policy) | *link to be added* |
+| Software Summary Document (DESC software policy) | [SSD - Google Sheets](https://docs.google.com/spreadsheets/d/1jmmCFLMJOCjgg5UGx8G_t9BHcEZrFLNG/edit?usp=sharing&ouid=116260603488410058508&rtpof=true&sd=true) |
 | License | MIT (see [LICENSE](LICENSE)) |
 
 ## Branches
