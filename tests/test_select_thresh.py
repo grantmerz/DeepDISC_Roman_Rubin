@@ -1,5 +1,8 @@
-"""Self-check for select_thresh's direction handling. Run: python test_select_thresh.py"""
+"""Self-check for select_thresh's direction handling. Run: python tests/test_select_thresh.py"""
+import sys
+from pathlib import Path
 import pandas as pd
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root, for the analysis modules
 from select_thresh import percentile, robustness
 
 

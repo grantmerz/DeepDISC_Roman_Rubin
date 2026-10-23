@@ -16,9 +16,10 @@ grid, with subcaptions from the computed outcomes) to <paper>/figures/matching/.
 main.tex keeps the figure environment, \\input{figures/matching/panels.tex}, the
 legend and the caption.
 
-    python matching_diagram.py --preview-dir /tmp/matching_preview
+    python paper_figures/matching_diagram.py --preview-dir /tmp/matching_preview
 """
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +32,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Circle
 from matplotlib.transforms import Bbox
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root, for the analysis modules
 from fof_classify import build_bipartite_and_match, classify_group_stage2, classify_stg1
 
 LINK = 1.0        # FOF linking length (arcsec)

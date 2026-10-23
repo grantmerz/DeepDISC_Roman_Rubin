@@ -39,7 +39,7 @@ OUTPUT_DIR="/work/hdd/bdsp/yse2/lsst_runs/${RUN_NAME}"
 
 echo "Launching DeepDISC training job..."
 
-python run_model_job_30k_distill.py \
+python training/run_model_job_30k_distill.py \
     --cfgfile ${CFG_FILE} \
     --train-metadata ${TRAIN_FILE} \
     --eval-metadata ${EVAL_FILE} \

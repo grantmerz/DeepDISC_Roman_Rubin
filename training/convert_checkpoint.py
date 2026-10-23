@@ -145,11 +145,11 @@ if __name__ == "__main__":
                                     epilog="""
                                     Examples:
                                     # Roman-Rubin CLIP (different patch sizes, FPN shift required):
-                                    python convert_checkpoint.py --input cascade_mask_rcnn_swin_b_in21k_model.pkl --output cascade_mask_rcnn_swin_b_in21k_clip_roman_rubin_model.pkl
+                                    python training/convert_checkpoint.py --input cascade_mask_rcnn_swin_b_in21k_model.pkl --output cascade_mask_rcnn_swin_b_in21k_clip_roman_rubin_model.pkl
                                     # Rubin-Rubin CLIP (same patch sizes, no FPN shift):
-                                    python convert_checkpoint.py --input cascade_mask_rcnn_swin_b_in21k_model.pkl --output cascade_mask_rcnn_swin_b_in21k_clip_rubin_rubin_model.pkl --same-patch-size
+                                    python training/convert_checkpoint.py --input cascade_mask_rcnn_swin_b_in21k_model.pkl --output cascade_mask_rcnn_swin_b_in21k_clip_rubin_rubin_model.pkl --same-patch-size
                                     # Single-backbone ps13 (FPN shift only, no dual-backbone split):
-                                    python convert_checkpoint.py --input cascade_mask_rcnn_swin_b_in21k_model.pkl --output cascade_mask_rcnn_swin_b_in21k_model_ps13.pkl --single-backbone
+                                    python training/convert_checkpoint.py --input cascade_mask_rcnn_swin_b_in21k_model.pkl --output cascade_mask_rcnn_swin_b_in21k_model_ps13.pkl --single-backbone
                                     """
                                     )
     parser.add_argument("--input", required=True, help="Path to input .pkl checkpoint")
@@ -175,4 +175,4 @@ if __name__ == "__main__":
 
 # "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl"
 # "/projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_clip_roman_rubin_model.pkl"
-# python convert_checkpoint.py --input /projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl --output /projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model_ps13.pkl --single-backbone
+# python training/convert_checkpoint.py --input /projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model.pkl --output /projects/bdsp/yse2/cascade_mask_rcnn_swin_b_in21k_model_ps13.pkl --single-backbone

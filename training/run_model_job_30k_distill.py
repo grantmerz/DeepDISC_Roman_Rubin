@@ -18,7 +18,7 @@ import time
 import sys
 import json
 # allows us to import from the custom configs directory w/o affecting deepdisc library imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'configs')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'configs')))
 from custom.trainers import return_timed_lazy_trainer
 from custom.hooks import return_timed_evallossHook
 #from custom.meta_arch import return_frozen_model, return_unfrozen_model
@@ -39,6 +39,8 @@ from deepdisc.data_format.image_readers import wlDC2ImageReader, wlHSCImageReade
 from deepdisc.data_format.register_data import register_data_set
 from deepdisc.model.loaders import return_test_loader, return_train_loader
 from deepdisc.model.models import return_lazy_model
+from custom.meta_arch_distill import return_frozen_teacher_model
+
 from deepdisc.training.trainers import (
     return_evallosshook,
     return_lazy_trainer,
@@ -49,7 +51,7 @@ from deepdisc.training.trainers import (
 from deepdisc.utils.parse_arguments import make_training_arg_parser
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
-def main(args, freeze):
+def main(args, freeze_teacher):
     # Hack if you get SSL certificate error
     import ssl
     ssl._create_default_https_context = ssl._create_unverified_context
@@ -97,17 +99,20 @@ def main(args, freeze):
     # efinal = e2
     # e3 = steps_per_epoch * 35
     # efinal = steps_per_epoch * 50
-    model = return_lazy_model(cfg, freeze)
+    model = return_frozen_teacher_model(cfg, freeze_teacher)
     # for training
+    khi = cfg.dataloader.train.keypoint_hflip_indices
+    cache_dir = cfg.dataloader.train.cache_dir
     mapper = cfg.dataloader.train.mapper(
-        cfg.dataloader.train.keypoint_hflip_indices,cfg.dataloader.train.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
+        khi, cache_dir, cfg.dataloader.train.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
     ).map_data
     loader = return_train_loader(cfg, mapper)
     # for validation 
     # val_per = 10 for testing
     val_per = steps_per_epoch
+    khi = cfg.dataloader.test.keypoint_hflip_indices
     eval_mapper = cfg.dataloader.test.mapper(
-       cfg.dataloader.test.keypoint_hflip_indices, cfg.dataloader.test.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
+       khi, cfg.dataloader.test.imagereader, cfg.dataloader.key_mapper, cfg.dataloader.augs
     ).map_data
     eval_loader = return_test_loader(cfg, eval_mapper)
     cfg.optimizer.params.model = model
@@ -161,7 +166,7 @@ if __name__ == "__main__":
     print("Training all layers with a SWIN Transformer backbone")
     # print("Running on GPUs:")
     torch.cuda.empty_cache()
-    freeze = False
+    freeze_teacher = True
     t0 = time.time()
     launch(
         main,
@@ -171,7 +176,7 @@ if __name__ == "__main__":
         dist_url=args.dist_url,
         args=(
             args,
-            freeze
+            freeze_teacher
         ),
     )
 

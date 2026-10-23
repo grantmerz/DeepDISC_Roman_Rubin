@@ -33,7 +33,7 @@ for (( i=$START_INDEX; i<$END_INDEX; i++ )); do
     if [[ $i -lt $NUM_TOTAL_TILES ]]; then
         CURRENT_TILE=${ALL_TILES[$i]}
         echo "--> Processing Tile #${i}: $CURRENT_TILE"
-        python lsst_anns.py $CURRENT_TILE
+        python data_processing/lsst_anns.py $CURRENT_TILE
         echo "--> Finished Tile #${i}: $CURRENT_TILE"
     fi
 done
@@ -50,7 +50,7 @@ echo "## Job Array Task ID: $SLURM_ARRAY_TASK_ID finished."
 
 # cd ~
 # # run script script with the correct tile
-# python lsst_anns.py $CURRENT_TILE
+# python data_processing/lsst_anns.py $CURRENT_TILE
 # echo "Finished job for tile $CURRENT_TILE"
 
 # SNR_LEVELS=(1 2 3 4 5)
@@ -76,7 +76,7 @@ echo "## Job Array Task ID: $SLURM_ARRAY_TASK_ID finished."
 # module load conda_base
 # conda activate btknv
 # cd ~
-# # python lsst_anns.py # old annotation code w/ more permissive masks (no dilation, lower threshold, no PSF area scaling)
+# # python data_processing/lsst_anns.py # old annotation code w/ more permissive masks (no dilation, lower threshold, no PSF area scaling)
 # # python lsst_anns_v2d.py # dilated masks 
 # # python lsst_anns_v3d.py # correctly dilated masks and image convolve with PSF
 # # python lsst_anns_v3d_lvl2.py # with lvl 2 instead of lvl 5

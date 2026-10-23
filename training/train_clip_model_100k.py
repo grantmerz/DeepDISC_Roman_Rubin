@@ -18,7 +18,7 @@ import os
 import time
 import sys
 # allows us to import from the custom configs directory w/o affecting deepdisc library imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'configs')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'configs')))
 from custom.trainers import return_timed_lazy_trainer, EarlyStoppingException
 from custom.hooks import return_timed_evallossHook, return_early_stoppingHook
 
@@ -27,6 +27,7 @@ import detectron2.utils.comm as comm
 # import some common libraries
 import numpy as np
 import torch
+torch.multiprocessing.set_sharing_strategy('file_system') # necessary for 100k training so we don't get "too many files open" error with dataloader workers > 0
 
 # import some common detectron2 utilities
 from detectron2.config import LazyConfig
@@ -45,8 +46,7 @@ from deepdisc.training.trainers import (
     return_schedulerhook
 )
 from deepdisc.utils.parse_arguments import make_training_arg_parser
-import ssl
-ssl._create_default_https_context = ssl._create_unverified_context
+
 def main(args, freeze):
     # Hack if you get SSL certificate error
     import ssl
@@ -84,27 +84,30 @@ def main(args, freeze):
     cfg.OUTPUT_DIR = output_dir
     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
     
-    # Iterations for 15, 25, 35, 50 epochs
+    # Iterations for 5, 10, 15, 20 epochs
     steps_per_epoch = cfg.dataloader.steps_per_epoch
-    e1 = steps_per_epoch * 15
-    e2 = steps_per_epoch * 25
-    e3 = steps_per_epoch * 35
-    efinal = steps_per_epoch * 50
-    # e1 = steps_per_epoch
-    # e2 = steps_per_epoch * 2
-    # efinal = e2
-    # e3 = steps_per_epoch * 35
-    # efinal = steps_per_epoch * 50
+    e1 = steps_per_epoch * 5
+    e2 = steps_per_epoch * 10
+    e3 = steps_per_epoch * 15
+    efinal = steps_per_epoch * 20
+
     val_per = steps_per_epoch
     model = return_lazy_model(cfg, freeze)
     mapper = cfg.dataloader.train.mapper(
-        cfg.dataloader.imagereader,
+        cfg.dataloader.train.imagereader,
+        cfg.dataloader.key_mapper,
+        cfg.dataloader.augs,
+        keypoint_hflip_indices=[0],
+    ).map_data
+    loader = return_train_loader(cfg, mapper)
+    
+    eval_mapper = cfg.dataloader.test.mapper(
+        cfg.dataloader.test.imagereader,
         cfg.dataloader.key_mapper,
         cfg.dataloader.augs,
         keypoint_hflip_indices=[0]
     ).map_data
-    loader = return_train_loader(cfg, mapper)
-    eval_loader = return_test_loader(cfg, mapper)
+    eval_loader = return_test_loader(cfg, eval_mapper)
     cfg.optimizer.params.model = model
     # if freeze:
     # setting up epochs and learning rate for training all layers
@@ -121,7 +124,7 @@ def main(args, freeze):
     # lossHook = return_evallosshook(5, model, eval_loader)
     lossHook = return_timed_evallossHook(val_per, model, eval_loader)
     # earlyStopHook = return_early_stoppingHook(
-    #     patience=steps_per_epoch,  # an epoch w/o improvement
+    #     patience=steps_per_epoch * 2,  # an epoch w/o improvement
     #     val_period=val_per,  # val period (every epoch)
     #     min_iters=steps_per_epoch * 5,  # don't activate early stopping until after 5 epochs
     #     save_best=True,  # save best model
@@ -143,12 +146,11 @@ def main(args, freeze):
     trainer.set_period(steps_per_epoch // 2)
     trainer.train(0, cfg.SOLVER.MAX_ITER)
     # trainer.set_period(5)
-    # trainer.train(0, 10) # for testing
-    # # now we need to wrap training in a try-except to catch early stopping
+    # now we need to wrap training in a try-except to catch early stopping
     # early_stop = False
     # try:
-    #     # trainer.train(0, cfg.SOLVER.MAX_ITER)
-    #     trainer.train(0, 10) # for testing
+    #     trainer.train(0, cfg.SOLVER.MAX_ITER)
+    #     # trainer.train(0, 10) # for testing
     # except EarlyStoppingException as e:
     #     early_stop = True
     #     logger.info("****** EARLY STOPPING CAUGHT IN TRAINING SCRIPT ******")

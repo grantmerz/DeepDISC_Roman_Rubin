@@ -18,7 +18,7 @@ import os
 import time
 import sys
 # allows us to import from the custom configs directory w/o affecting deepdisc library imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'configs')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'configs')))
 from custom.trainers import return_timed_lazy_trainer, EarlyStoppingException
 from custom.hooks import return_timed_evallossHook, return_early_stoppingHook
 from custom.mappers import return_custom_test_loader
@@ -29,7 +29,6 @@ import detectron2.utils.comm as comm
 import numpy as np
 import torch
 import torch.distributed as dist
-from omegaconf.nodes import AnyNode
 
 # import some common detectron2 utilities
 from detectron2.config import LazyConfig
@@ -102,26 +101,26 @@ def main(args, freeze):
     e2 = steps_per_epoch * 25
     e3 = steps_per_epoch * 35
     efinal = steps_per_epoch * 50
-    # Continue-training switch
-    # continue_from_epoch_22_with_weight_init = True
-    # continue_from_epoch_42_with_weight_init = True
-    continue_from_epoch_48_with_weight_init = True
-    # if continue_from_epoch_22_with_weight_init:
-    if continue_from_epoch_48_with_weight_init:
+    # # Continue-training switch
+    continue_from_epoch_24_with_weight_init = True
+    # # continue_from_epoch_42_with_weight_init = True
+    # continue_from_epoch_48_with_weight_init = False
+    # # if continue_from_epoch_22_with_weight_init:
+    if continue_from_epoch_24_with_weight_init:
         # We restart iter=0 with loaded model weights from global epoch 22.
         # Keep global milestones at epochs 15, 25, 35, but shift to local run time.
         # start_epoch = 22
         # start_epoch = 42
-        start_epoch = 48
+        start_epoch = 24
         start_iter = steps_per_epoch * start_epoch
         # Keep only future milestones, shifted to local timeline.
         cfg.SOLVER.STEPS = [s - start_iter for s in [e1, e2, e3] if s > start_iter]
         # Train remaining epochs until global epoch 50.
         cfg.SOLVER.MAX_ITER = efinal - start_iter
         # At global epoch 22, LR should already be after first decay (epoch 15).
-        # cfg.optimizer.lr = 0.0001
+        cfg.optimizer.lr = 0.0001
         # At global epoch 42, LR should already be after all decays (epoch 15).
-        cfg.optimizer.lr = 0.000001
+        # cfg.optimizer.lr = 0.000001
         logger.info(
             f"Continue-from-{start_epoch} mode: "
             f"steps={cfg.SOLVER.STEPS}, "
@@ -138,6 +137,7 @@ def main(args, freeze):
     # efinal = e2
     # e3 = steps_per_epoch * 35
     # efinal = steps_per_epoch * 50
+    # val_per = 75
     val_per = steps_per_epoch
     model = return_lazy_model(cfg, freeze)
     khi = cfg.dataloader.train.keypoint_hflip_indices
@@ -168,7 +168,7 @@ def main(args, freeze):
     # cfg.SOLVER.STEPS = [e1,e2,e3]
     # # cfg.SOLVER.STEPS = [e1]
     # cfg.SOLVER.MAX_ITER = efinal
-    # cfg.optimizer.lr = 0.001 # to 0.0001
+    # cfg.optimizer.lr = 0.001
     optimizer = return_optimizer(cfg)
     
     # choosing hooks for trainer
@@ -198,8 +198,8 @@ def main(args, freeze):
     trainer = return_timed_lazy_trainer(model, loader, optimizer, cfg, hookList)
     trainer.set_period(steps_per_epoch // 2)
     trainer.train(0, cfg.SOLVER.MAX_ITER)
-    # trainer.set_period(10)
-    # trainer.train(0, 50) # for testing
+    # trainer.set_period(25)
+    # trainer.train(0, 200) # for testing
     # # now we need to wrap training in a try-except to catch early stopping
     # early_stop = False
     # try:

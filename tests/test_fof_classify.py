@@ -26,9 +26,14 @@ external dependency we treat as trusted.
 Run:  pytest test_fof_classify.py -v
 """
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root, for the analysis modules
 
 from fof_classify import (
     ALL_FLAG_COLS,

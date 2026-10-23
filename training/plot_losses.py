@@ -11,15 +11,15 @@ Plots saved:
   - Total detection loss + contrastive loss on one figure
 
 Usage:
-    python plot_losses.py --run-dir ~/lsst_runs/clip5_30k_4h200_bs64_ep50
-    python plot_losses.py --run-dir ~/lsst_runs/clip5_30k_4h200_bs64_ep50 --contrastive-xmin 7100 --contrastive-ymin 0.3 --contrastive-ymax 1.6
-    python plot_losses.py --run-dir ~/lsst_runs/clip5_flatten_30k_4h200_bs64_ep15_resume --only-all-losses --all-losses-ymin 4
+    python training/plot_losses.py --run-dir ~/lsst_runs/clip5_30k_4h200_bs64_ep50
+    python training/plot_losses.py --run-dir ~/lsst_runs/clip5_30k_4h200_bs64_ep50 --contrastive-xmin 7100 --contrastive-ymin 0.3 --contrastive-ymax 1.6
+    python training/plot_losses.py --run-dir ~/lsst_runs/clip5_flatten_30k_4h200_bs64_ep15_resume --only-all-losses --all-losses-ymin 4
     
-    python plot_losses.py --run-dir ~/lsst_runs/lsst5_30k_4h200_bs192_ep50
-    python plot_losses.py --run-dir ~/lsst_runs/lsst5_30k_4h200_bs192_ep50 --all-losses-xmin 2365 --all-losses-ymax 5.2
+    python training/plot_losses.py --run-dir ~/lsst_runs/lsst5_30k_4h200_bs192_ep50
+    python training/plot_losses.py --run-dir ~/lsst_runs/lsst5_30k_4h200_bs192_ep50 --all-losses-xmin 2365 --all-losses-ymax 5.2
     
-    python plot_losses.py --run-dir ~/lsst_runs/clip5_30k_4h200_bs64_ep50 --smooth 10
-    python plot_losses.py --run-dir ~/lsst_runs/clip5_30k_4h200_bs64_ep50 --no-val
+    python training/plot_losses.py --run-dir ~/lsst_runs/clip5_30k_4h200_bs64_ep50 --smooth 10
+    python training/plot_losses.py --run-dir ~/lsst_runs/clip5_30k_4h200_bs64_ep50 --no-val
 """
 
 import argparse

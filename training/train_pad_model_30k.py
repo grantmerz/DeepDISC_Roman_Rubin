@@ -11,16 +11,18 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # Some basic setup:
 # Setup detectron2 logger
 from detectron2.utils.logger import setup_logger
-
+import pickle, io
 import json
 import gc
 import os
+import signal
 import time
 import sys
 # allows us to import from the custom configs directory w/o affecting deepdisc library imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'configs')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'configs')))
 from custom.trainers import return_timed_lazy_trainer, EarlyStoppingException
-from custom.hooks import return_timed_evallossHook, return_early_stoppingHook
+from custom.hooks import return_timed_evallossHook, return_early_stoppingHook, return_lossHistoryHook, _save_loss_histories
+from custom.mappers import return_custom_test_loader
 
 import detectron2.utils.comm as comm
 
@@ -100,63 +102,52 @@ def main(args, freeze):
     e2 = steps_per_epoch * 25
     e3 = steps_per_epoch * 35
     efinal = steps_per_epoch * 50
-    # e1 = steps_per_epoch * 2
-    # e2 = steps_per_epoch * 5
+    # e1 = steps_per_epoch
+    # e2 = steps_per_epoch * 2
     # efinal = e2
-    # Training mode switches
-    # - stage1_15only=True: run only first 15 epochs from scratch to just see loss curves
-    # and then we set to False when we want the full 50-epoch schedule
-    stage1_15only = False
-    # - continue_from_epoch_15_with_weight_init=True: load 15-epoch weights,
-    #   restart iter=0, and continue with shifted milestones
-    continue_from_epoch_15_with_weight_init = True
-    val_per = steps_per_epoch
-    model = return_lazy_model(cfg, freeze)
-    mapper = cfg.dataloader.train.mapper(
-        cfg.dataloader.train.imagereader,
-        cfg.dataloader.key_mapper,
-        cfg.dataloader.augs,
-        keypoint_hflip_indices=[0],
-    ).map_data
-    loader = return_train_loader(cfg, mapper)
-    
-    eval_mapper = cfg.dataloader.test.mapper(
-        cfg.dataloader.test.imagereader,
-        cfg.dataloader.key_mapper,
-        cfg.dataloader.augs,
-        keypoint_hflip_indices=[0],
-    ).map_data
-    eval_loader = return_test_loader(cfg, eval_mapper)
-    cfg.optimizer.params.model = model
-    # if freeze:
-    # setting up epochs and learning rate for training all layers
-    if stage1_15only:
-        # No LR decay inside the first 15-epoch probe run.
-        cfg.SOLVER.STEPS = []
-        cfg.SOLVER.MAX_ITER = e1
+    # e3 = steps_per_epoch * 35
+    # efinal = steps_per_epoch * 50
+    continue_from_epoch_8_with_weight_init = True
+    if continue_from_epoch_8_with_weight_init:
+        # We restart iter=0 with loaded model weights from global epoch 8.
+        # Keep global milestones at epochs 15, 25, 35, but shift to local run time.
+        start_epoch = 8
+        start_iter = steps_per_epoch * start_epoch
+        # Keep only future milestones, shifted to local timeline.
+        cfg.SOLVER.STEPS = [s - start_iter for s in [e1, e2, e3] if s > start_iter]
+        # Train remaining epochs until global epoch 50.
+        cfg.SOLVER.MAX_ITER = efinal - start_iter
+        # At global epoch 8, LR should already be after first decay (epoch 15).
         cfg.optimizer.lr = 0.001
-    elif continue_from_epoch_15_with_weight_init:
-        # We are NOT resuming optimizer/scheduler state so we restart at iter=0
-        # from stage-1 weights. Shift global milestones (25,35) by -15 epochs
-        # Global target still ends at epoch 50, so local run length is 35 epochs
-        start_epoch = 15
-        cfg.SOLVER.STEPS = [e2 - e1, e3 - e1]   # local epochs 10, 20
-        cfg.SOLVER.MAX_ITER = efinal - e1        # local epochs 35
-        # from SOLVER.GAMMA = 0.1 set in yacs_style_defaults.py which is what we import from in our config file
-        # so LR needs to be at the right rate for the decays at epochs 25 and 35
-        cfg.optimizer.lr = 0.0001 
         logger.info(
-            f"Continue-from-{start_epoch} mode: steps={cfg.SOLVER.STEPS}, "
+            f"Continue-from-{start_epoch} mode: "
+            f"steps={cfg.SOLVER.STEPS}, "
             f"max_iter={cfg.SOLVER.MAX_ITER}, "
-            f"lr={cfg.optimizer.lr}"
-        )        
+            f"lr={cfg.optimizer.lr}, "
+            f"init_ckpt={cfg.train.init_checkpoint}"
+        )
     else:
         cfg.SOLVER.STEPS = [e1, e2, e3]
         cfg.SOLVER.MAX_ITER = efinal
         cfg.optimizer.lr = 0.001
         
+    val_per = steps_per_epoch
+    model = return_lazy_model(cfg, freeze)
+    khi = cfg.dataloader.train.keypoint_hflip_indices
+    mapper = cfg.dataloader.train.mapper(
+        cfg.dataloader.train.imagereader,
+        cfg.dataloader.key_mapper,
+        cfg.dataloader.augs,
+        keypoint_hflip_indices=khi
+    ).map_data
+    loader = return_train_loader(cfg, mapper)
+    # eval_loader = return_test_loader(cfg, mapper)
+    eval_loader = return_custom_test_loader(cfg, mapper)
+    cfg.optimizer.params.model = model
+    # if freeze:
+    # setting up epochs and learning rate for training all layers
     # cfg.SOLVER.STEPS = [e1,e2,e3]
-    # cfg.SOLVER.STEPS = [e1]
+    # # cfg.SOLVER.STEPS = [e1]
     # cfg.SOLVER.MAX_ITER = efinal
     # cfg.optimizer.lr = 0.001
     optimizer = return_optimizer(cfg)
@@ -166,6 +157,7 @@ def main(args, freeze):
     schedulerHook = return_schedulerhook(optimizer)
     # lossHook = return_evallosshook(5, model, eval_loader)
     lossHook = return_timed_evallossHook(val_per, model, eval_loader)
+    # lossHistoryHook = return_lossHistoryHook(output_dir, run_name, max(1, steps_per_epoch // 4))
     # earlyStopHook = return_early_stoppingHook(
     #     patience=steps_per_epoch,  # an epoch w/o improvement
     #     val_period=val_per,  # val period (every epoch)
@@ -184,12 +176,26 @@ def main(args, freeze):
     # hookList = [schedulerHook, saveHook]
     hookList = [lossHook, schedulerHook, saveHook]
     # hookList = [lossHook, earlyStopHook, schedulerHook, saveHook]
-    
+    # hookList = [lossHook, earlyStopHook, schedulerHook, saveHook, lossHistoryHook]
     trainer = return_timed_lazy_trainer(model, loader, optimizer, cfg, hookList)
     trainer.set_period(steps_per_epoch // 2)
     trainer.train(0, cfg.SOLVER.MAX_ITER)
-    # trainer.set_period(10)
-    # trainer.train(0, 30) # for testing
+    # trainer.set_period(5)
+    # trainer.train(0, 10) # for testing
+    # def _handle_termination(signum, frame):
+    #     _save_loss_histories(trainer, output_dir, run_name)
+    #     raise KeyboardInterrupt(f"Training interrupted by signal {signum}")
+
+    # previous_sigterm = signal.signal(signal.SIGTERM, _handle_termination)
+    # previous_sigint = signal.signal(signal.SIGINT, _handle_termination)
+    # try:
+    #     trainer.train(0, cfg.SOLVER.MAX_ITER)
+    # except BaseException:
+    #     _save_loss_histories(trainer, output_dir, run_name)
+    #     raise
+    # finally:
+    #     signal.signal(signal.SIGTERM, previous_sigterm)
+    #     signal.signal(signal.SIGINT, previous_sigint)
     # # now we need to wrap training in a try-except to catch early stopping
     # early_stop = False
     # try:
@@ -216,6 +222,7 @@ def main(args, freeze):
             json.dump(trainer.lossdict_epochs, json_file)
         with open(os.path.join(output_dir,run_name) + "_val_losses.json", 'w') as json_file:
             json.dump(trainer.vallossdict_epochs, json_file)
+    # _save_loss_histories(trainer, output_dir, run_name)
     # if comm.is_main_process():
     #     if early_stop:
     #         logger.info(f"Training Status: STOPPED EARLY")
@@ -225,7 +232,6 @@ def main(args, freeze):
     #         logger.info(f"Total iterations: {cfg.SOLVER.MAX_ITER}")
     #     np.save(f"{output_dir}/{run_name}_losses", trainer.lossList)
     #     np.save(f"{output_dir}/{run_name}_val_losses", trainer.vallossList)
-
     # to avoid this warning:
     # [rank0]:[W1212 09:05:12.615562415 ProcessGroupNCCL.cpp:1524] 
     # Warning: WARNING: destroy_process_group() was not called before program exit, 
@@ -261,9 +267,7 @@ if __name__ == "__main__":
             freeze
         ),
     )
-
     torch.cuda.empty_cache()
     gc.collect()
-
     print(f"Took {time.time()-t0} seconds")
 

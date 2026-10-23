@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 import numpy as np
 from scipy.stats import norm
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import blend_metrics as bm
 from plot_binned_metrics import NotebookArgs
 

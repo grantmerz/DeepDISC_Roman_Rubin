@@ -14,6 +14,6 @@
 #SBATCH --mail-type=ALL
 
 
-python cache_wcs_maps.py --dset test_8k_keypoints_wcs --anns-dir annotations
+python data_processing/cache_wcs_maps.py --dset test_8k_keypoints_wcs --anns-dir annotations
 
-python cache_wcs_maps.py --dset train_30k_keypoints_wcs --anns-dir annotations
+python data_processing/cache_wcs_maps.py --dset train_30k_keypoints_wcs --anns-dir annotations

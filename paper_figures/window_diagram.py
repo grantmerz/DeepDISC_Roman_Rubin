@@ -17,7 +17,7 @@ use the cached Lanczos remap to the Roman grid that training and inference used.
 Writes one PDF per panel, a standalone legend.pdf and panels.tex (the \\subfloat row, with
 subcaptions from the computed geometry) to <paper>/figures/windows/.
 
-    python window_diagram.py --preview-dir /tmp/window_preview
+    python paper_figures/window_diagram.py --preview-dir /tmp/window_preview
 """
 import argparse
 import hashlib

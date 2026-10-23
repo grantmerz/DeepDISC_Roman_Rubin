@@ -102,7 +102,7 @@ Create ground truth annotations using Galsim and the truth information:
 # job script for batch processing
 sbatch jobs/lsst_anns.sh
 # Or run directly with:
-python lsst_anns.py
+python data_processing/lsst_anns.py
 ```
 
 ### 5. Combining and Cleaning Annotations
@@ -154,23 +154,23 @@ step 6, the batch size and the number of epochs there.
 
 | Model in the paper | Config (inference) | Trained with |
 | --- | --- | --- |
-| DeepDISC Rubin (baseline) | `swin_lsst_30k.py` | `run_model_job_30k.py` + `swin_lsst_keypoints.sh`* |
-| DeepDISC RubinUps (Lanczos upsampled) | `swin_ups_lsst_30k.py` | `train_model_30k.py` |
-| DeepDISC RubinPadded | `swin_lsst_30k_pad.py` | `train_model_30k.py` |
-| DeepDISC PatchSize13 | `swin_ps13_ups_lsst_30k.py` | `train_model_30k.py` |
-| DeepDISC Rubin+Roman | `swin_comb_lsst_roman_30k.py` | `run_model_job_30k_comb.py` with `swin_comb_job_keypoint_30k.py`* |
-| Distillation (Future directions) | `swin_distill_job_keypoint_30k.py` | `run_model_job_30k_distill.py` + `swin_distill_keypoints.sh`* |
-| CLIP (Future directions) | `swin_clip_lsst_roman_30k.py` | `train_clip_model_30k.py` + `jobs/train_clip_30k.sh` |
+| DeepDISC Rubin (baseline) | `swin_lsst_30k.py` | `training/run_model_job_30k.py` + `swin_lsst_keypoints.sh`* |
+| DeepDISC RubinUps (Lanczos upsampled) | `swin_ups_lsst_30k.py` | `training/train_model_30k.py` |
+| DeepDISC RubinPadded | `swin_lsst_30k_pad.py` | `training/train_model_30k.py` |
+| DeepDISC PatchSize13 | `swin_ps13_ups_lsst_30k.py` | `training/train_model_30k.py` |
+| DeepDISC Rubin+Roman | `swin_comb_lsst_roman_30k.py` | `training/run_model_job_30k_comb.py` with `swin_comb_job_keypoint_30k.py`* |
+| Distillation (Future directions) | `swin_distill_job_keypoint_30k.py` | `training/run_model_job_30k_distill.py` + `swin_distill_keypoints.sh`* |
+| CLIP (Future directions) | `swin_clip_lsst_roman_30k.py` | `training/train_clip_model_30k.py` + `jobs/train_clip_30k.sh` |
 
 \* In `/work/hdd/bdsp/g4merz/RubinRoman/` on NCSA Delta. `swin_lsst_keypoints.sh` has since been reused for
 another run; the baseline was Slurm job 15658778 from that folder. The RubinUps, PatchSize13 and Rubin+Roman
-models also need the cached WCS remap maps from `cache_wcs_maps.py` / `run_cache_wcs_maps.sh` (same folder).
+models also need the cached WCS remap maps from `data_processing/cache_wcs_maps.py` / `jobs/run_cache_wcs_maps.sh`.
 
 The RubinUps, RubinPadded and PatchSize13 runs were resumed from intermediate checkpoints, with the resume
-epoch and learning rate edited in the training script before each resume. Train with `train_model_30k.py`:
+epoch and learning rate edited in the training script before each resume. Train with `training/train_model_30k.py`:
 
 ```bash
-python train_model_30k.py --cfgfile configs/solo/swin_lsst_30k.py \
+python training/train_model_30k.py --cfgfile configs/solo/swin_lsst_30k.py \
     --train-metadata /path/to/lsst_data/annotations_lvl5/train_30k_keypoints.json \
     --eval-metadata /path/to/lsst_data/annotations_lvl5/val_4k_keypoints.json \
     --num-gpus 4 --run-name lsst5_30k_4h200_bs192_ep50 --output-dir ./lsst_runs/lsst5_30k_4h200_bs192_ep50
@@ -215,14 +215,14 @@ python run_fof_classify.py --run-name lsst5_30k_4h200_bs192_ep50 --preds-dir tes
 
 | Paper content | Code |
 | --- | --- |
-| Scalar metric tables and confidence intervals | `compute_scalar_table.py`, `blend_metrics.py`, `ci_readme_numbers.py` |
-| Magnitude-binned curves | `metrics.ipynb` (uses `plot_binned_metrics.py`) |
-| Resampling ablation curves (appendix) | `ablation_metrics.ipynb` |
-| Anchor coverage (Section 4.2, appendix) | `compute_anchor_recall.py`, `jobs/anchor_recall.sh`, `anchor_recall.ipynb` |
-| Matching-procedure figure | `matching_diagram.py` |
-| Attention-window figure | `window_diagram.py` |
-| Scene figure | `scene_plots.ipynb` |
-| Blend-system examples | `blend_examples.ipynb` |
+| Scalar metric tables and confidence intervals | `compute_scalar_table.py`, `blend_metrics.py`, `paper_figures/ci_readme_numbers.py` |
+| Magnitude-binned curves | `paper_figures/metrics.ipynb` (uses `plot_binned_metrics.py`) |
+| Resampling ablation curves (appendix) | `paper_figures/ablation_metrics.ipynb` |
+| Anchor coverage (Section 4.2, appendix) | `compute_anchor_recall.py`, `jobs/anchor_recall.sh`, `paper_figures/anchor_recall.ipynb` |
+| Matching-procedure figure | `paper_figures/matching_diagram.py` |
+| Attention-window figure | `paper_figures/window_diagram.py` |
+| Scene figure | `paper_figures/scene_plots.ipynb` |
+| Blend-system examples | `paper_figures/blend_examples.ipynb` |
 | Grid-search heatmaps and trade-off plot | `plot_grid_search.py`, `select_thresh.py` |
 
 ## File Structure
@@ -231,9 +231,9 @@ python run_fof_classify.py --run-name lsst5_30k_4h200_bs192_ep50 --preds-dir tes
 
 | File | Purpose |
 | --- | --- |
-| `lsst_anns.py` | Generates the training labels from GalSim renderings of the truth catalog (step 4) |
-| `add_keypoints.py` | Adds each object's centroid keypoint to the annotations |
-| `train_model_30k.py` | Trains a model from a config in `configs/solo/` (step 7) |
+| `data_processing/lsst_anns.py` | Generates the training labels from GalSim renderings of the truth catalog (step 4) |
+| `data_processing/add_keypoints.py` | Adds each object's centroid keypoint to the annotations |
+| `training/train_model_30k.py` | Trains a model from a config in `configs/solo/` (step 7) |
 | `run_inference.py` | Runs inference for a list of ROI score and NMS thresholds (steps 8 and 10) |
 | `add_dd_mags.py` | Adds PSF magnitudes to DeepDISC detections |
 | `fof_classify.py` | Two-stage FOF + Hungarian matching and the Stage 1/2 classification |
@@ -245,20 +245,20 @@ python run_fof_classify.py --run-name lsst5_30k_4h200_bs192_ep50 --preds-dir tes
 | `compute_scalar_table.py` | Scalar metric tables with confidence intervals |
 | `plot_binned_metrics.py` | Magnitude-binned metric curves |
 | `compute_anchor_recall.py` | Best-anchor IoU and RPN recall per truth object (anchor-coverage analysis) |
-| `matching_diagram.py`, `window_diagram.py` | The matching-procedure and attention-window figures |
-| `test_fof_classify.py`, `test_select_thresh.py` | Tests for the matching and the operating-point selection |
-| `train_clip_model_30k.py`, `train_clip_model_100k.py`, `convert_checkpoint.py` | CLIP-style Rubin–Roman experiments (Future directions in the paper) |
+| `paper_figures/matching_diagram.py`, `paper_figures/window_diagram.py` | The matching-procedure and attention-window figures |
+| `tests/test_fof_classify.py`, `tests/test_select_thresh.py` | Tests for the matching and the operating-point selection |
+| `training/train_clip_model_30k.py`, `training/train_clip_model_100k.py`, `training/convert_checkpoint.py` | CLIP-style Rubin–Roman experiments (Future directions in the paper) |
 
 ### Notebooks
 
 | Notebook | Purpose |
 | --- | --- |
-| `metrics.ipynb` | Magnitude-binned curves and scalar tables for the paper's main results |
-| `ablation_metrics.ipynb` | Magnitude-binned curves for the resampling ablation |
-| `anchor_recall.ipynb` | Anchor-coverage analysis |
-| `scene_plots.ipynb` | Scene-level detection figure |
-| `blend_examples.ipynb` | Blend-system example figures |
-| `galsim_truth_anns.ipynb` | Notebook version of `lsst_anns.py` (may be behind the script) |
+| `paper_figures/metrics.ipynb` | Magnitude-binned curves and scalar tables for the paper's main results |
+| `paper_figures/ablation_metrics.ipynb` | Magnitude-binned curves for the resampling ablation |
+| `paper_figures/anchor_recall.ipynb` | Anchor-coverage analysis |
+| `paper_figures/scene_plots.ipynb` | Scene-level detection figure |
+| `paper_figures/blend_examples.ipynb` | Blend-system example figures |
+| `data_processing/galsim_truth_anns.ipynb` | Notebook version of `data_processing/lsst_anns.py` (may be behind the script) |
 | `AllObjsHist.ipynb` | Histograms of the Roman object distributions |
 
 ### Folders
@@ -266,7 +266,10 @@ python run_fof_classify.py --run-name lsst5_30k_4h200_bs192_ep50 --preds-dir tes
 | Folder | Contents |
 | --- | --- |
 | `configs/` | Model configs (`solo/`) and custom detectron2 components (`custom/`) |
-| `data_processing/` | Roman and LSST data download, cutouts, catalogs and annotation clean-up (steps 1–6) |
+| `data_processing/` | Roman and LSST data download, cutouts, catalogs, annotations and annotation clean-up (steps 1–6) |
+| `training/` | Training scripts and training-loss plots (step 7) |
+| `paper_figures/` | Notebooks and scripts that make the paper's figures and quoted numbers |
+| `tests/` | Tests for the matching and the operating-point selection (`python -m pytest tests`) |
 | `jobs/` | Slurm scripts for data preparation, training, inference and the anchor-coverage analysis |
 | `docs/` | Notes, including a review of the patch-size-13 architecture |
 | `old/` | Superseded notebooks and scripts, kept for reference |

@@ -42,7 +42,7 @@ OUTPUT_DIR="./lsst_runs/${RUN_NAME}"
 
 echo "Launching DeepDISC training job..."
 
-python train_model_100k.py \
+python training/train_model_100k.py \
     --cfgfile ${CFG_FILE} \
     --train-metadata ${TRAIN_FILE} \
     --eval-metadata ${EVAL_FILE} \
