@@ -19,7 +19,8 @@ import cv2
 import numpy as np
 import pandas as pd
 # allows us to import from the custom configs directory w/o affecting deepdisc library imports
-sys.path.insert(0, '/u/yse2/deepdisc/configs')
+CONFIG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), 'configs'))
+sys.path.insert(0, CONFIG_DIR)
 # Astropy imports
 from astropy.wcs import WCS
 
@@ -670,61 +671,61 @@ if __name__ == "__main__":
     # Per-model-type defaults (used when --cfgfile / --run_name / --test_data_fn are not supplied)
     MODEL_DEFAULTS = {
         "standard_30k": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_lsst_30k.py",
+            "cfgfile":      os.path.join(CONFIG_DIR, "solo/swin_lsst_30k.py"),
             "run_name":     "lsst5_30k_4h200_bs192_ep50",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
         },
         "standard_30k_pad": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_lsst_30k_pad.py",
+            "cfgfile":      os.path.join(CONFIG_DIR, "solo/swin_lsst_30k_pad.py"),
             "run_name":     "lsst5_pad_30k_4h200_bs192_ep50",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
         },
         "standard_all": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_lsst_100k.py",
+            "cfgfile":      os.path.join(CONFIG_DIR, "solo/swin_lsst_100k.py"),
             "run_name":     "lsst5_all_4h200_bs192_ep20",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_keypoints.json",
         },
         "clip_30k": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py",
+            "cfgfile":      os.path.join(CONFIG_DIR, "solo/swin_clip_lsst_roman_30k.py"),
             "run_name":     "clip5_30k_4h200_bs64_ep50",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
         },
         "clip_30k_emb": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py",
+            "cfgfile":      os.path.join(CONFIG_DIR, "solo/swin_clip_lsst_roman_30k.py"),
             "run_name":     "clip5_30k_4h200_bs192_ep15_lprj",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",
         },
         "clip_all": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_100k.py",
+            "cfgfile":      os.path.join(CONFIG_DIR, "solo/swin_clip_lsst_roman_100k.py"),
             "run_name":     "clip5_all_4h200_bs64_ep20",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_keypoints.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_keypoints.json",
         },
         "ups_30k": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_ups_lsst_30k.py",
+            "cfgfile":      os.path.join(CONFIG_DIR, "solo/swin_ups_lsst_30k.py"),
             "run_name":     "lsst5_ups_30k_4h200_bs192_ep50",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints_wcs.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints_wcs.json",
         },
         "ups_30k_ps13": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_ps13_ups_lsst_30k.py",
+            "cfgfile":      os.path.join(CONFIG_DIR, "solo/swin_ps13_ups_lsst_30k.py"),
             "run_name":     "lsst5_ps13_ups_30k_4h200_bs192_ep50",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints_wcs.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints_wcs.json",
         },
         "comb_30k": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_comb_lsst_roman_30k.py",
+            "cfgfile":      os.path.join(CONFIG_DIR, "solo/swin_comb_lsst_roman_30k.py"),
             "run_name":     "comb_30k_4h200_bs144_ep50",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints_wcs.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints_wcs.json",
         },
         "distill_30k": {
-            "cfgfile":      "/u/yse2/deepdisc/configs/solo/swin_distill_lsst_roman_30k.py",
+            "cfgfile":      os.path.join(CONFIG_DIR, "solo/swin_distill_lsst_roman_30k.py"),
             "run_name":     "distill_30k_4h200_bs192_ep50",
             "eval_data_fn": f"{data_root_dir}{anns_folder}/val_4k_keypoints.json",
             "test_data_fn": f"{data_root_dir}{anns_folder}/test_8k_keypoints.json",

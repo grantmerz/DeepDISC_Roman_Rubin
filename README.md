@@ -47,8 +47,9 @@ This section describes the complete workflow for processing Roman and LSST data 
 
 The Slurm scripts in `jobs/` were written for NCSA Delta. Before running one, edit its `#SBATCH` account and
 partition lines, the conda environment, and the hard-coded paths (`/u/yse2/...`, `/work/hdd/bdsp/...`,
-`CFG_FILE`, data and output directories) to match your system. Most of them `cd ~` and expect the repository
-scripts there, so either change that `cd` to the repository root or copy the scripts.
+data and output directories) to match your system. Submit them from the repository root
+(`sbatch jobs/<script>.sh`): they `cd "$SLURM_SUBMIT_DIR"` and refer to scripts and `configs/solo/` by paths
+relative to the repository, and the Python scripts find `configs/` relative to their own location.
 
 ### 1. Downloading and Preparing Roman Data
 

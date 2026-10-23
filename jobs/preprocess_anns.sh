@@ -14,6 +14,6 @@
 
 echo "## Starting Job"
 echo "## Node: $(hostname)"
-cd ~
-python preprocess_anns.py --plots
+cd "$SLURM_SUBMIT_DIR"
+python data_processing/lsst/preprocess_anns.py --plots
 echo "## Job finished."

@@ -19,7 +19,7 @@ echo "## Job ID: $SLURM_JOB_ID"
 echo "## Node: $(hostname)"
 echo "## Started: $(date)"
 
-cd ~/DeepDISC_Roman_Rubin/
+cd "$SLURM_SUBMIT_DIR"
 
 BUFFER=$SLURM_ARRAY_TASK_ID
 # BUFFER=1

@@ -20,7 +20,7 @@ echo "Node: $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
 echo "GPUs: $CUDA_VISIBLE_DEVICES"
 
-cd ~
+cd "$SLURM_SUBMIT_DIR"
 # GPU and CUDA checks
 # clears GPU cache to avoid Cublas errors
 echo "Checking CUDA and GPU status..."
@@ -31,7 +31,7 @@ echo "Running on GPUs:"
 nvidia-smi --query-gpu=gpu_name,gpu_bus_id,memory.total,memory.used --format=csv
 echo "Defining training parameters..."
 # locations of config and data files
-CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_ups_lsst_30k.py"
+CFG_FILE="configs/solo/swin_ups_lsst_30k.py"
 # REPLACE WITH KEYPOINTS FILE 
 # Eventually we should just have train_30k.json to default have keypoints 
 # and not have to specify a separate file for keypoints
@@ -57,6 +57,6 @@ python train_ups_model_30k.py \
     --run-name ${RUN_NAME} \
     --output-dir ${OUTPUT_DIR}
 
---cfgfile "/u/yse2/deepdisc/configs/solo/swin_ups_lsst_30k.py" --train-metadata "/u/yse2/lsst_data/annotations_lvl5/train_30k_keypoints_wcs.json" --eval-metadata "/u/yse2/lsst_data/annotations_lvl5/val_4k_keypoints_wcs.json" --num-gpus 2 --run-name "ups_test" --output-dir "/u/yse2/test_lsst_runs/ups_test"
+--cfgfile "configs/solo/swin_ups_lsst_30k.py" --train-metadata "/u/yse2/lsst_data/annotations_lvl5/train_30k_keypoints_wcs.json" --eval-metadata "/u/yse2/lsst_data/annotations_lvl5/val_4k_keypoints_wcs.json" --num-gpus 2 --run-name "ups_test" --output-dir "/u/yse2/test_lsst_runs/ups_test"
 echo "Training script finished."
 echo "Job Finished: $(date)"

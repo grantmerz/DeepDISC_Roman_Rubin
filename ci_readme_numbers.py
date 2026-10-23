@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 import numpy as np
 from scipy.stats import norm
-sys.path.insert(0, '/u/yse2/DeepDISC_Roman_Rubin')
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import blend_metrics as bm
 from plot_binned_metrics import NotebookArgs
 

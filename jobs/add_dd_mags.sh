@@ -17,7 +17,7 @@ echo "Job Started: $(date)"
 echo "Node: $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"
 
-cd ~/DeepDISC_Roman_Rubin/
+cd "$SLURM_SUBMIT_DIR"
 # lsst5_all: ~2.2 hrs w/ 16 32C, 64G for val of 15k
 RUN_NAME="${RUN_NAME:-lsst5_30k_4h200_bs192_ep50}"
 ROOT_RUN_DIR="${ROOT_RUN_DIR:-~/lsst_runs/}"

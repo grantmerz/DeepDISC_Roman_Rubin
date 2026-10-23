@@ -54,7 +54,7 @@
 #   --preds-dir DIR --match-rad R --dmag-sig D --workers N --include-counts --skip-lsst
 
 set -euo pipefail
-cd /u/yse2/DeepDISC_Roman_Rubin/
+cd "$SLURM_SUBMIT_DIR"
 
 echo "## Job ID: ${SLURM_JOB_ID:-none}"
 echo "## Array Task ID: ${SLURM_ARRAY_TASK_ID:-none}"

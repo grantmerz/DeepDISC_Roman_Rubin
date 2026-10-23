@@ -31,7 +31,7 @@ else
 fi
 echo "MASTER_PORT: $MASTER_PORT"
 
-cd ~
+cd "$SLURM_SUBMIT_DIR"
 # GPU and CUDA checks
 # clears GPU cache to avoid Cublas errors
 echo "Checking CUDA and GPU status..."
@@ -106,7 +106,7 @@ for RUN in "${RUN_ARRAY[@]}"; do
     if [ -n "$TEST_DATA_FN" ]; then
         PY_ARGS+=(--test_data_fn "${TEST_DATA_FN}")
     fi
-    python extract_pre_nms_embeddings.py "${PY_ARGS[@]}"
+    python embed_analysis/extract_pre_nms_embeddings.py "${PY_ARGS[@]}"
     echo "Finished run ${CURRENT_RUN}/${TOTAL_RUNS}: ${RUN_TRIMMED}"
 done
 

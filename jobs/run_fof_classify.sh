@@ -81,7 +81,7 @@ echo "Match rad: ${MATCH_RAD:-<per-linking-length>}"
 echo "Skip LSST: $SKIP_LSST"
 echo "Prediction file: $PRED_FN"
 
-cd /u/yse2/DeepDISC_Roman_Rubin/
+cd "$SLURM_SUBMIT_DIR"
 read -ra LINKING_LENGTH_ARR <<< "$LINKING_LENGTHS"
 
 CMD=(

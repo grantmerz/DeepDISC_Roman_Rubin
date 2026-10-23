@@ -47,7 +47,8 @@ import pandas as pd
 import torch
 
 # allows us to import from the custom configs directory w/o affecting deepdisc library imports
-sys.path.insert(0, '/u/yse2/deepdisc/configs')
+CONFIG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), 'configs'))
+sys.path.insert(0, CONFIG_DIR)
 
 from detectron2.config import LazyConfig, instantiate
 from detectron2.checkpoint import DetectionCheckpointer
@@ -72,19 +73,19 @@ ROOT_RUN_DIR = os.path.expanduser('~/lsst_runs/')
 RUBIN_PIXEL_SCALE, ROMAN_PIXEL_SCALE = 0.2, 0.0575
 MODEL_DEFAULTS = {
     "ups_30k_ps13": {
-        "cfgfile":  "/u/yse2/deepdisc/configs/solo/swin_ps13_ups_lsst_30k.py",
+        "cfgfile":  os.path.join(CONFIG_DIR, "solo/swin_ps13_ups_lsst_30k.py"),
         "run_name": "lsst5_ps13_ups_30k_4h200_bs192_ep50",
         "resize": True,
         "pixel_scale": ROMAN_PIXEL_SCALE,
     },
     "ups_30k": {
-        "cfgfile":  "/u/yse2/deepdisc/configs/solo/swin_ups_lsst_30k.py",
+        "cfgfile":  os.path.join(CONFIG_DIR, "solo/swin_ups_lsst_30k.py"),
         "run_name": "lsst5_ups_30k_4h200_bs192_ep50",
         "resize": True,
         "pixel_scale": ROMAN_PIXEL_SCALE,
     },
     "base_30k": {
-        "cfgfile":  "/u/yse2/deepdisc/configs/solo/swin_lsst_30k.py",
+        "cfgfile":  os.path.join(CONFIG_DIR, "solo/swin_lsst_30k.py"),
         "run_name": "lsst5_30k_4h200_bs192_ep50",
         "resize": False,
         "pixel_scale": RUBIN_PIXEL_SCALE,

@@ -19,7 +19,7 @@ TILE_LIST_FILE="/u/yse2/tiles_remaining.txt"
 
 echo "## Starting Job Array Task ID: $SLURM_ARRAY_TASK_ID"
 echo "## Node: $(hostname)"
-cd ~
+cd "$SLURM_SUBMIT_DIR"
 
 readarray -t ALL_TILES < "$TILE_LIST_FILE"
 NUM_TOTAL_TILES=${#ALL_TILES[@]}

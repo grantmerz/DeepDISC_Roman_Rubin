@@ -14,7 +14,8 @@ import time
 import numpy as np
 # allows us to import from the custom configs directory w/o affecting deepdisc library imports
 # CHANGE TO YOUR OWN CUSTOM PATH TO CONFIGS DIRECTORY
-sys.path.insert(0, '/u/yse2/deepdisc/configs')
+CONFIG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), 'configs'))
+sys.path.insert(0, CONFIG_DIR)
 # Astropy imports
 from astropy.wcs import WCS
 
@@ -457,7 +458,7 @@ if __name__ == "__main__":
 
 # Example usage:
 # python dp1_inference.py \
-#     --cfgfile /u/yse2/deepdisc/configs/solo/swin_lsst_job.py \
+#     --cfgfile configs/solo/swin_lsst_job.py \
 #     --model_path /u/yse2/lsst_runs/lsst5_30k_4h200_bs192_ep50/lsst5_30k_4h200_bs192_ep50.pth \
 #     --test_data_fn ~/dp1/test.json \
 #     --output_dir ~/dp1/preds \
