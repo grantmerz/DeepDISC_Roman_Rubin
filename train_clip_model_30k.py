@@ -106,10 +106,10 @@ def main(args, freeze):
     # Training mode switches
     # - stage1_15only=True: run only first 15 epochs from scratch to just see loss curves
     # and then we set to False when we want the full 50-epoch schedule
-    stage1_15only = True
+    stage1_15only = False
     # - continue_from_epoch_15_with_weight_init=True: load 15-epoch weights,
     #   restart iter=0, and continue with shifted milestones
-    continue_from_epoch_15_with_weight_init = False
+    continue_from_epoch_15_with_weight_init = True
     val_per = steps_per_epoch
     model = return_lazy_model(cfg, freeze)
     mapper = cfg.dataloader.train.mapper(
@@ -162,10 +162,10 @@ def main(args, freeze):
     optimizer = return_optimizer(cfg)
     
     # choosing hooks for trainer
-    saveHook = return_savehook(run_name, steps_per_epoch)
+    saveHook = return_savehook(run_name, steps_per_epoch * 2)
     schedulerHook = return_schedulerhook(optimizer)
     # lossHook = return_evallosshook(5, model, eval_loader)
-    # lossHook = return_timed_evallossHook(val_per, model, eval_loader)
+    lossHook = return_timed_evallossHook(val_per, model, eval_loader)
     # earlyStopHook = return_early_stoppingHook(
     #     patience=steps_per_epoch,  # an epoch w/o improvement
     #     val_period=val_per,  # val period (every epoch)
@@ -181,8 +181,8 @@ def main(args, freeze):
     #     save_best=True,  # save best model
     #     output_name=f"{run_name}_best_TEST"
     # )
-    hookList = [schedulerHook, saveHook]
-    # hookList = [lossHook, schedulerHook, saveHook]
+    # hookList = [schedulerHook, saveHook]
+    hookList = [lossHook, schedulerHook, saveHook]
     # hookList = [lossHook, earlyStopHook, schedulerHook, saveHook]
     
     trainer = return_timed_lazy_trainer(model, loader, optimizer, cfg, hookList)
@@ -266,3 +266,4 @@ if __name__ == "__main__":
     gc.collect()
 
     print(f"Took {time.time()-t0} seconds")
+
