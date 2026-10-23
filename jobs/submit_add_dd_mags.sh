@@ -10,14 +10,38 @@ set -euo pipefail
 #   submit_add_dd_mags.sh -j c30k_test_mags --run-names "clip5_flatten_30k_4h200_bs64_ep15_resume" --preds-dir test --filenames-csv /u/yse2/test8k_fns.csv --score-thresholds "0.4" --nms-thresholds "0.55" --dry-run
 #   submit_add_dd_mags.sh -j c30k_test_mags --run-names "clip5_flatten_30k_4h200_bs64_ep15_resume clip5_30k_4h200_bs64_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns.csv --score-thresholds "0.4" --nms-thresholds "0.55" --dry-run
 
-# submit_add_dd_mags.sh -j comb30k_eval_mags --run-names "comb_30k_4h200_bs144_ep50" --preds-dir eval --filenames-csv /u/yse2/val4k_fns_wcs.csv --score-thresholds "0.45 0.5 0.55 0.6 0.65" --nms-thresholds "0.45 0.5 0.55 0.6 0.65" --upsample --dry-run
-# submit_add_dd_mags.sh -j comb30k_test_mags --run-names "comb_30k_4h200_bs144_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv -t 02:30:00 --score-thresholds "0.4 0.55 0.65" --nms-thresholds "0.55 0.65 0.65" --upsample --no-combo --dry-run
+# submit_add_dd_mags.sh -j comb30k_eval_mags --run-names "comb_30k_4h200_bs144_ep50" --preds-dir eval --filenames-csv /u/yse2/val4k_fns_wcs.csv --score-thresholds "0.45 0.5 0.55 0.6 0.65" --nms-thresholds "0.45 0.5 0.55 0.6 0.65" --dry-run
+# submit_add_dd_mags.sh -j comb30k_test_mags --run-names "comb_30k_4h200_bs144_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv -t 02:30:00 --score-thresholds "0.4 0.55 0.65" --nms-thresholds "0.55 0.65 0.65" --no-combo --dry-run
 
 # submit_add_dd_mags.sh -j d30k_eval_mags --run-names "distill_30k_4h200_bs192_ep50" --preds-dir eval --filenames-csv /u/yse2/val4k_fns.csv --score-thresholds "0.4" --nms-thresholds "0.55" --dry-run
 # submit_add_dd_mags.sh -j d30k_test_mags --run-names "distill_30k_4h200_bs192_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns.csv --score-thresholds "0.65" --nms-thresholds "0.65" --dry-run
 # submit_add_dd_mags.sh -j d30k_test_mags --run-names "lsst5_30k_4h200_bs192_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns.csv --score-thresholds "0.65" --nms-thresholds "0.65" --dry-run
 # submit_add_dd_mags.sh -j c30k_test_mags --run-names "clip5_30k_4h200_bs192_ep15_lprj" --preds-dir test --filenames-csv /u/yse2/test8k_fns.csv --score-thresholds "0.4" --nms-thresholds "0.55"
 # submit_add_dd_mags.sh -j c30k_test_mags --run-names "lsst5_30k_4h200_bs192_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns.csv --score-thresholds "0.4" --nms-thresholds "0.55"
+
+# PSF Mag model
+# ~/jobs/submit_add_dd_mags.sh -j pap_lsst5_ups --run-names "lsst5_ups_30k_4h200_bs192_ep50" --filenames-csv /u/yse2/val4k_fns_wcs.csv --dry-run
+# ~/jobs/submit_add_dd_mags.sh -j pap_comb --run-names "comb_30k_4h200_bs144_ep50" --filenames-csv /u/yse2/val4k_fns_wcs.csv --dry-run
+
+# ~/jobs/submit_add_dd_mags.sh -j pap_tlsst5 --run-names "lsst5_30k_4h200_bs192_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.5" --nms-thresholds "0.6" --no-combo
+# ~/jobs/submit_add_dd_mags.sh -j pap_tlsst5_msig --run-names "lsst5_30k_4h200_bs192_ep50_musigma" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.5" --nms-thresholds "0.6" --no-combo
+# ~/jobs/submit_add_dd_mags.sh -j pap_tlsst5_ups --run-names "lsst5_ups_30k_4h200_bs192_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.6" --nms-thresholds "0.65" --no-combo
+# ~/jobs/submit_add_dd_mags.sh -j pap_tcomb5 --run-names "comb_30k_4h200_bs144_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.6" --nms-thresholds "0.7" --no-combo
+
+# submit_add_dd_mags.sh -j psf_mags --run-names "comb_30k_4h200_bs144_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.65" --nms-thresholds "0.65" --dry-run
+# submit_add_dd_mags.sh -j pmag_25 --run-names "comb_30k_4h200_bs144_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.65" --nms-thresholds "0.65" --dry-run
+
+# ~/jobs/submit_add_dd_mags.sh -j lsst5_musigma --run-names "lsst5_30k_4h200_bs192_ep50_musigma" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.65" --nms-thresholds "0.65" --no-combo --dry-run
+# ~/jobs/submit_add_dd_mags.sh -j lsst5_pad --run-names "lsst5_pad_30k_4h200_bs192_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.65" --nms-thresholds "0.65" --no-combo --dry-run
+# ~/jobs/submit_add_dd_mags.sh -j lsst5_ps13 --run-names "lsst5_ps13_ups_30k_4h200_bs192_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.65" --nms-thresholds "0.65" --no-combo --dry-run
+
+
+# ~/jobs/submit_add_dd_mags.sh -j comb_30k_psf --run-names "comb_30k_4h200_bs144_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.55" --nms-thresholds "0.65" --dry-run
+# ~/jobs/submit_add_dd_mags.sh -j lsst5_30k_psf --run-names "lsst5_30k_4h200_bs192_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.4 0.5" --nms-thresholds "0.55 0.6" --no-combo --dry-run
+# ~/jobs/submit_add_dd_mags.sh -j lsst5_ups --run-names "lsst5_ups_30k_4h200_bs192_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.65" --nms-thresholds "0.65" --no-combo --dry-run
+# ~/jobs/submit_add_dd_mags.sh -j comb_30k --run-names "comb_30k_4h200_bs144_ep50" --preds-dir test --filenames-csv /u/yse2/test8k_fns_wcs.csv --score-thresholds "0.65" --nms-thresholds "0.7" --dry-run
+
+# ~/jobs/submit_add_dd_mags.sh -j pap_epad -t 02:30:00 --run-names "lsst5_pad_30k_4h200_bs192_ep50" --filenames-csv /u/yse2/val4k_fns_wcs.csv
 
 # SLURM defaults (match jobs/add_dd_mags.sh)
 DEFAULT_JOB_SCRIPT="$HOME/jobs/add_dd_mags.sh"
@@ -26,6 +50,7 @@ DEFAULT_LOG_DIR="/projects/bfhm/yse2/logs/add_mags"
 DEFAULT_ACCOUNT="bfhm-delta-cpu"
 DEFAULT_PARTITION="cpu"
 DEFAULT_CONSTRAINT="work"
+DEFAULT_EXCLUDE="cn002,cn003,cn066" # known bad nodes for CPU jobs
 DEFAULT_NODES=1
 DEFAULT_NTASKS_PER_NODE=1
 DEFAULT_CPUS_PER_TASK=32
@@ -40,7 +65,6 @@ DEFAULT_PREDS_DIR="eval"
 DEFAULT_FILENAMES_CSV="~/val4k_fns.csv"
 DEFAULT_IO_THREADS=16
 DEFAULT_N_PROCESSES=16
-DEFAULT_UPSAMPLE="false"
 DEFAULT_SCORE_THRESHOLDS="0.2 0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75 0.8 0.85 0.9"
 DEFAULT_NMS_THRESHOLDS="0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75"
 
@@ -58,6 +82,7 @@ SLURM Options:
     -A, --account NAME             SLURM account (default: $DEFAULT_ACCOUNT)
     -p, --partition NAME           SLURM partition (default: $DEFAULT_PARTITION)
         --constraint EXPR          Node feature constraint (default: $DEFAULT_CONSTRAINT)
+        --exclude NODES            Excluded node list for sbatch (e.g. node[01-03],node05)
         --nodes N                  Number of nodes (default: $DEFAULT_NODES)
         --ntasks-per-node N        Tasks per node (default: $DEFAULT_NTASKS_PER_NODE)
     -c, --cpus N                   CPUs per task (default: $DEFAULT_CPUS_PER_TASK)
@@ -75,7 +100,6 @@ add_dd_mags.py Options:
     --no-combo                     Pair score/NMS by index instead of cartesian product
     --io-threads N                 Threads for image loading (default: $DEFAULT_IO_THREADS)
     --n-processes N                Worker processes (default: $DEFAULT_N_PROCESSES)
-    --upsample                     Enable LSST upsampling before magnitude computation (default: disabled)
     --resume                       Skip completed output combos
 
 Misc:
@@ -91,6 +115,7 @@ LOG_DIR="$DEFAULT_LOG_DIR"
 ACCOUNT="$DEFAULT_ACCOUNT"
 PARTITION="$DEFAULT_PARTITION"
 CONSTRAINT="$DEFAULT_CONSTRAINT"
+EXCLUDE_NODES="$DEFAULT_EXCLUDE"
 NODES="$DEFAULT_NODES"
 NTASKS_PER_NODE="$DEFAULT_NTASKS_PER_NODE"
 CPUS="$DEFAULT_CPUS_PER_TASK"
@@ -106,7 +131,6 @@ SCORE_THRESHOLDS="$DEFAULT_SCORE_THRESHOLDS"
 NMS_THRESHOLDS="$DEFAULT_NMS_THRESHOLDS"
 IO_THREADS="$DEFAULT_IO_THREADS"
 N_PROCESSES="$DEFAULT_N_PROCESSES"
-UPSAMPLE="$DEFAULT_UPSAMPLE"
 NO_COMBO="false"
 RESUME="false"
 DRY_RUN="false"
@@ -120,6 +144,7 @@ while [[ $# -gt 0 ]]; do
         -A|--account)           ACCOUNT="$2";              shift 2 ;;
         -p|--partition)         PARTITION="$2";            shift 2 ;;
         --constraint)           CONSTRAINT="$2";           shift 2 ;;
+        --exclude)              EXCLUDE_NODES="$2";        shift 2 ;;
         --nodes)                NODES="$2";                shift 2 ;;
         --ntasks-per-node)      NTASKS_PER_NODE="$2";      shift 2 ;;
         -c|--cpus)              CPUS="$2";                 shift 2 ;;
@@ -137,7 +162,6 @@ while [[ $# -gt 0 ]]; do
         --no-combo)             NO_COMBO="true";           shift ;;
         --io-threads)           IO_THREADS="$2";           shift 2 ;;
         --n-processes)          N_PROCESSES="$2";          shift 2 ;;
-        --upsample)             UPSAMPLE="true";           shift ;;
         --resume)               RESUME="true";             shift ;;
 
         --dry-run)              DRY_RUN="true";            shift ;;
@@ -207,7 +231,6 @@ echo "  NMS thresholds   : $NMS_THRESHOLDS"
 echo "  No combo         : $NO_COMBO"
 echo "  IO threads       : $IO_THREADS"
 echo "  Worker processes : $N_PROCESSES"
-echo "  Upsample         : $UPSAMPLE"
 echo "  Resume           : $RESUME"
 echo ""
 echo "SLURM configuration:"
@@ -216,6 +239,7 @@ echo "  Log dir          : $LOG_DIR"
 echo "  Account          : $ACCOUNT"
 echo "  Partition        : $PARTITION"
 echo "  Constraint       : $CONSTRAINT"
+echo "  Excluded nodes   : ${EXCLUDE_NODES:-<none>}"
 echo "  Nodes            : $NODES"
 echo "  Tasks/node       : $NTASKS_PER_NODE"
 echo "  CPUs per task    : $CPUS"
@@ -236,7 +260,6 @@ for run_name in "${RUN_NAMES[@]}"; do
     export NO_COMBO
     export IO_THREADS
     export N_PROCESSES
-    export UPSAMPLE
     export RESUME
 
     SBATCH_CMD=(
@@ -255,6 +278,9 @@ for run_name in "${RUN_NAMES[@]}"; do
         "--mail-user=$MAIL_USER"
         "--mail-type=$MAIL_TYPE"
     )
+    if [[ -n "$EXCLUDE_NODES" ]]; then
+        SBATCH_CMD+=("--exclude=$EXCLUDE_NODES")
+    fi
     SBATCH_CMD+=("$JOB_SCRIPT")
 
     echo "Run: $run_name"

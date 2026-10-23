@@ -13,19 +13,30 @@ set -euo pipefail
 
 # ./submit_run_fof_classify.sh --run-names "comb_30k_4h200_bs144_ep50" --dataset-preset test_8k --score-thresholds "0.4 0.55 0.65" --nms-thresholds "0.55 0.65 0.65" --buffers "1 2"
 # ./submit_run_fof_classify.sh --run-names "comb_30k_4h200_bs144_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65" --buffers "1"
+# ./submit_run_fof_classify.sh --run-names "comb_30k_4h200_bs144_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65" --buffers "1"  --skip-lsst
 
-
+# ./submit_run_fof_classify.sh -j paper_comb --run-names "comb_30k_4h200_bs144_ep50" --dataset-preset test_8k --score-thresholds "0.55" --nms-thresholds "0.65"
+# ./submit_run_fof_classify.sh -j paper_comb --run-names "comb_30k_4h200_bs144_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.7"
+# ./submit_run_fof_classify.sh -j paper_base --run-names "lsst5_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.4 0.5" --nms-thresholds "0.55 0.6"
+# ./submit_run_fof_classify.sh -j paper_ups --run-names "lsst5_ups_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65"
+# ./jobs/submit_run_fof_classify.sh -j paper_base_ms --run-names "lsst5_30k_4h200_bs192_ep50_musigma" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65"
+# ./jobs/submit_run_fof_classify.sh -j paper_base_pad --run-names "lsst5_pad_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65"
+# ./jobs/submit_run_fof_classify.sh -j paper_base_ps13 --run-names "lsst5_ps13_ups_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65"
+               
 # ./submit_run_fof_classify.sh --run-names "lsst5_30k_4h200_bs192_ep50 distill_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65" --buffers "1"
 # ./submit_run_fof_classify.sh --run-names "lsst5_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.65" --nms-thresholds "0.65" --buffers "1"
 
 # ./submit_run_fof_classify.sh --run-names "clip5_30k_4h200_bs192_ep15_lprj" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --buffers "1"
 # ./submit_run_fof_classify.sh --run-names "lsst5_30k_4h200_bs192_ep50" --dataset-preset test_8k --score-thresholds "0.4" --nms-thresholds "0.55" --buffers "1,2"
+
+# ~/jobs/submit_run_fof_classify.sh --dataset-preset test_8k --model-specs "lsst5_30k_4h200_bs192_ep50=0.5:0.6" --model-specs "lsst5_ups_30k_4h200_bs192_ep50=0.6:0.65" --model-specs "comb_30k_4h200_bs144_ep50=0.6:0.7" --job-names "lsst5_30k_4h200_bs192_ep50=pap_tbase" --job-names "lsst5_ups_30k_4h200_bs192_ep50=pap_tups" --job-names "comb_30k_4h200_bs144_ep50=pap_tcomb"
+# ``~/jobs/submit_run_fof_classify.sh -j pap_tbase_ms --run-names "lsst5_30k_4h200_bs192_ep50_musigma" --dataset-preset test_8k --score-thresholds "0.5" --nms-thresholds "0.6"``
 DEFAULT_JOB_SCRIPT="$HOME/jobs/run_fof_classify.sh"
 
 # SLURM defaults
 DEFAULT_JOB_NAME="fof_cls"
 DEFAULT_LOG_DIR="/projects/bfhm/yse2/logs/fof_classify"
-DEFAULT_ACCOUNT="bfhm-delta-cpu"
+DEFAULT_ACCOUNT="bdsp-delta-cpu"
 DEFAULT_PARTITION="cpu"
 DEFAULT_EXCLUDE="cn001,cn002,cn003"
 DEFAULT_CONSTRAINT="work"
@@ -46,8 +57,9 @@ DEFAULT_TEST_CATS_DIR=""
 DEFAULT_SCORE_THRESHOLDS="0.4 0.55"
 DEFAULT_NMS_THRESHOLDS="0.5 0.6"
 DEFAULT_MAG_LIMIT="gold"
-DEFAULT_BUFFERS="1 2"
-DEFAULT_LINKING_LENGTHS="1.0 2.0"
+DEFAULT_BUFFERS="2"
+DEFAULT_LINKING_LENGTHS="1.0 0.5"
+DEFAULT_DMAG_SIG="2.0"
 
 show_usage() {
     cat << EOF
@@ -55,6 +67,7 @@ Usage: $0 [OPTIONS]
 
 Options:
     --run-names "R1 R2 ..."       Space-separated run names (default: "$DEFAULT_RUN_NAMES")
+    --model-specs "M1=s1:n1,..."  Per-model combos: "run=score:nms,..." ... (overrides --run-names/--score-thresholds/--nms-thresholds)
 
 Workflow Options:
     --dataset-preset NAME          val_4k | val_all | test_8k | test_all | custom (default: $DEFAULT_DATASET_PRESET)
@@ -67,7 +80,9 @@ Workflow Options:
     --mag-limit NAME               gold | power_law | nominal (default: $DEFAULT_MAG_LIMIT)
     --buffers "B1 B2"              Space-separated buffers in [0,1,2] (default: "$DEFAULT_BUFFERS")
     --linking-lengths "L1 L2"      Space-separated linking lengths (default: "$DEFAULT_LINKING_LENGTHS")
+    --dmag-sig FLOAT               Significant-blend mag gap threshold (default: $DEFAULT_DMAG_SIG)
     --match-rad FLOAT              Optional stage2 match radius override
+    --job-names "run1=custom1"     Per-run job name prefix override (repeatable, model-specs mode)
     --skip-lsst                    Pass --skip-lsst to run_fof_classify.py
 
 SLURM Options:
@@ -97,6 +112,13 @@ Examples:
 
     $0 --run-names "lsst5_all_4h200_bs192_ep20" --dataset-preset test_all \
        --score-thresholds "0.45 0.55" --nms-thresholds "0.65 0.65"
+
+    $0 --dataset-preset test_8k --buffers "1 2" \
+       --model-specs "lsst5_30k_4h200_bs192_ep50=0.4:0.55,0.5:0.6" --model-specs "clip5_30k_4h200_bs64_ep50=0.55:0.65"
+
+    $0 --dataset-preset test_8k --buffers "2" \
+       --model-specs "lsst5_30k_4h200_bs192_ep50=0.5:0.6" --model-specs "lsst5_ups_30k_4h200_bs192_ep50=0.6:0.65" \
+       --job-names "lsst5_30k_4h200_bs192_ep50=paper_base" --job-names "lsst5_ups_30k_4h200_bs192_ep50=paper_ups"
 EOF
 }
 
@@ -127,9 +149,12 @@ COMBO="false"
 MAG_LIMIT="$DEFAULT_MAG_LIMIT"
 BUFFERS_RAW="$DEFAULT_BUFFERS"
 LINKING_LENGTHS="$DEFAULT_LINKING_LENGTHS"
+DMAG_SIG="$DEFAULT_DMAG_SIG"
 MATCH_RAD=""
 SKIP_LSST="false"
 DRY_RUN="false"
+MODEL_SPECS=()
+JOB_NAMES_SPECS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -158,8 +183,11 @@ while [[ $# -gt 0 ]]; do
         --mag-limit)            MAG_LIMIT="$2";            shift 2 ;;
         --buffers)              BUFFERS_RAW="$2";          shift 2 ;;
         --linking-lengths)      LINKING_LENGTHS="$2";      shift 2 ;;
+        --dmag-sig)             DMAG_SIG="$2";             shift 2 ;;
         --match-rad)            MATCH_RAD="$2";            shift 2 ;;
         --combo)                COMBO="true";             shift ;;
+        --model-specs)          MODEL_SPECS+=("$2");       shift 2 ;;
+        --job-names)            JOB_NAMES_SPECS+=("$2");   shift 2 ;;
         --skip-lsst)            SKIP_LSST="true";          shift ;;
         --dry-run)              DRY_RUN="true";            shift ;;
         -h|--help)              show_usage; exit 0 ;;
@@ -222,19 +250,25 @@ if [[ ! -d "$TEST_CATS_DIR_EXPANDED" ]]; then
     exit 1
 fi
 
-read -ra RUN_NAMES <<< "$RUN_NAMES_RAW"
-read -ra SCORE_THRESH_ARR <<< "$SCORE_THRESHOLDS"
-read -ra NMS_THRESH_ARR <<< "$NMS_THRESHOLDS"
 read -ra BUFFERS_ARR <<< "$BUFFERS_RAW"
 read -ra LINKING_LENGTHS_ARR <<< "$LINKING_LENGTHS"
 
-if [[ "${#RUN_NAMES[@]}" -eq 0 ]]; then
-    echo "Error: --run-names did not contain any run names"
-    exit 1
-fi
-if [[ "${#SCORE_THRESH_ARR[@]}" -eq 0 ]] || [[ "${#NMS_THRESH_ARR[@]}" -eq 0 ]]; then
-    echo "Error: threshold lists cannot be empty"
-    exit 1
+if [[ ${#MODEL_SPECS[@]} -gt 0 ]]; then
+    # Model-specs mode: skip legacy run-names/thresholds validation
+    :
+else
+    read -ra RUN_NAMES <<< "$RUN_NAMES_RAW"
+    read -ra SCORE_THRESH_ARR <<< "$SCORE_THRESHOLDS"
+    read -ra NMS_THRESH_ARR <<< "$NMS_THRESHOLDS"
+
+    if [[ "${#RUN_NAMES[@]}" -eq 0 ]]; then
+        echo "Error: --run-names did not contain any run names"
+        exit 1
+    fi
+    if [[ "${#SCORE_THRESH_ARR[@]}" -eq 0 ]] || [[ "${#NMS_THRESH_ARR[@]}" -eq 0 ]]; then
+        echo "Error: threshold lists cannot be empty"
+        exit 1
+    fi
 fi
 if [[ "${#BUFFERS_ARR[@]}" -eq 0 ]]; then
     echo "Error: --buffers cannot be empty"
@@ -251,18 +285,20 @@ for b in "${BUFFERS_ARR[@]}"; do
         exit 1
     fi
 done
-for s in "${SCORE_THRESH_ARR[@]}"; do
-    awk -v x="$s" 'BEGIN{exit !(x+0>=0 && x+0<=1)}' || {
-        echo "Error: score threshold out of range [0,1]: $s"
-        exit 1
-    }
-done
-for n in "${NMS_THRESH_ARR[@]}"; do
-    awk -v x="$n" 'BEGIN{exit !(x+0>=0 && x+0<=1)}' || {
-        echo "Error: nms threshold out of range [0,1]: $n"
-        exit 1
-    }
-done
+if [[ ${#MODEL_SPECS[@]} -eq 0 ]]; then
+    for s in "${SCORE_THRESH_ARR[@]}"; do
+        awk -v x="$s" 'BEGIN{exit !(x+0>=0 && x+0<=1)}' || {
+            echo "Error: score threshold out of range [0,1]: $s"
+            exit 1
+        }
+    done
+    for n in "${NMS_THRESH_ARR[@]}"; do
+        awk -v x="$n" 'BEGIN{exit !(x+0>=0 && x+0<=1)}' || {
+            echo "Error: nms threshold out of range [0,1]: $n"
+            exit 1
+        }
+    done
+fi
 for ll in "${LINKING_LENGTHS_ARR[@]}"; do
     awk -v x="$ll" 'BEGIN{exit !(x+0>0)}' || {
         echo "Error: linking length must be > 0: $ll"
@@ -272,19 +308,40 @@ done
 
 mkdir -p "$LOG_DIR"
 
+# Build job-names map from --job-names specs
+declare -A JOB_NAMES_MAP
+for spec in "${JOB_NAMES_SPECS[@]}"; do
+    run="${spec%%=*}"
+    name="${spec#*=}"
+    if [[ -z "$run" ]] || [[ -z "$name" ]]; then
+        echo "Error: invalid --job-names entry (expected run=name): $spec"
+        exit 1
+    fi
+    JOB_NAMES_MAP["$run"]="$name"
+done
+
 echo "FOF classify configuration:"
-echo "  Run names         : ${RUN_NAMES[*]}"
+if [[ ${#MODEL_SPECS[@]} -gt 0 ]]; then
+    echo "  Mode              : model-specs (per-model combos)"
+    echo "  Model specs       : ${MODEL_SPECS[*]}"
+else
+    echo "  Run names         : ${RUN_NAMES[*]}"
+    echo "  Score thresholds  : $SCORE_THRESHOLDS"
+    echo "  NMS thresholds    : $NMS_THRESHOLDS"
+fi
 echo "  Root run dir      : $ROOT_RUN_DIR_EXPANDED"
 echo "  Dataset preset    : $DATASET_PRESET"
 echo "  Test cats dir     : $TEST_CATS_DIR_EXPANDED"
 echo "  Preds dir         : $PREDS_DIR"
-echo "  Score thresholds  : $SCORE_THRESHOLDS"
-echo "  NMS thresholds    : $NMS_THRESHOLDS"
 echo "  Mag limit         : $MAG_LIMIT"
 echo "  Buffers           : $BUFFERS_RAW"
 echo "  Linking lengths   : $LINKING_LENGTHS"
+echo "  DMag sig          : ${DMAG_SIG:-<none>}"
 echo "  Match rad         : ${MATCH_RAD:-<per-linking-length>}"
 echo "  Skip LSST         : $SKIP_LSST"
+if [[ ${#JOB_NAMES_SPECS[@]} -gt 0 ]]; then
+    echo "  Job names         : ${JOB_NAMES_SPECS[*]}"
+fi
 echo ""
 echo "SLURM configuration:"
 echo "  Base job name     : $JOB_NAME"
@@ -305,100 +362,167 @@ get_truth_mag_limit() {
     local mag_limit="$1"
     local buffer="$2"
     python - "$mag_limit" "$buffer" << 'PY'
-import sys
-mag = sys.argv[1]
-buffer = int(sys.argv[2])
-base = {
-    'power_law': 26.22,
-    'gold': 25.3,
-    'nominal': 26.42,
-}[mag]
-print(f"{base + buffer:.2f}")
+        import sys
+        mag = sys.argv[1]
+        buffer = int(sys.argv[2])
+        base = {
+            'power_law': 26.22,
+            'gold': 25.3,
+            'nominal': 26.42,
+        }[mag]
+        print(f"{base + buffer:.2f}")
 PY
 }
 
-build_combos() {
-    local -n out_ref=$1
-    out_ref=()
-    if [[ "$COMBO" == "true" ]]; then
-        for s in "${SCORE_THRESH_ARR[@]}"; do
-            for n in "${NMS_THRESH_ARR[@]}"; do
-                out_ref+=("${s}:${n}")
-            done
-        done
+# --- Submit helper (shared by both paths) ---
+submit_one() {
+    local run_name="$1" buffer="$2" score="$3" nms="$4"
+    local safe_score="${score//./p}"
+    local safe_nms="${nms//./p}"
+    local custom_prefix="${JOB_NAMES_MAP[$run_name]:-${JOB_NAME}_${run_name}}"
+    local job_name_run="${custom_prefix}_buf${buffer}_s${safe_score}_n${safe_nms}"
+    export ROOT_RUN_DIR="$ROOT_RUN_DIR_EXPANDED"
+    export RUN_NAME="$run_name"
+    export TEST_CATS_DIR="$TEST_CATS_DIR_EXPANDED"
+    export PREDS_DIR
+    export SCORE_THRESH="$score"
+    export NMS_THRESH="$nms"
+    export MAG_LIMIT
+    export BUFFER="$buffer"
+    export LINKING_LENGTHS
+    export DMAG_SIG
+    export MATCH_RAD
+    export SKIP_LSST
+
+    SBATCH_CMD=(
+        sbatch
+        "--job-name=$job_name_run"
+        "--output=${LOG_DIR}/%x.%j.%N.out"
+        "--error=${LOG_DIR}/%x.%j.%N.err"
+        "--account=$ACCOUNT"
+        "--partition=$PARTITION"
+        "--exclude=$EXCLUDE"
+        "--constraint=$CONSTRAINT"
+        "--nodes=$NODES"
+        "--ntasks-per-node=$NTASKS_PER_NODE"
+        "--cpus-per-task=$CPUS"
+        "--mem=$MEMORY"
+        "--time=$TIME_LIMIT"
+        "--mail-user=$MAIL_USER"
+        "--mail-type=$MAIL_TYPE"
+        "$JOB_SCRIPT"
+    )
+    echo "Command:$(printf ' %q' "${SBATCH_CMD[@]}")"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "Dry run for run=$run_name buffer=$buffer score=$score nms=$nms -- no job submitted."
     else
-        if [[ "${#SCORE_THRESH_ARR[@]}" -ne "${#NMS_THRESH_ARR[@]}" ]]; then
-            echo "Error: --score-thresholds and --nms-thresholds must have the same length for index pairing (got ${#SCORE_THRESH_ARR[@]} vs ${#NMS_THRESH_ARR[@]}). Use --combo for cartesian product."
-            exit 1
-        fi
-        for i in "${!SCORE_THRESH_ARR[@]}"; do
-            out_ref+=("${SCORE_THRESH_ARR[$i]}:${NMS_THRESH_ARR[$i]}")
-        done
+        "${SBATCH_CMD[@]}"
     fi
+    echo ""
 }
 
-COMBOS=()
-build_combos COMBOS
-
-for run_name in "${RUN_NAMES[@]}"; do
-    run_dir="$ROOT_RUN_DIR_EXPANDED/$run_name"
-    if [[ ! -d "$run_dir" ]]; then
-        echo "Warning: run directory missing, skipping: $run_dir"
-        continue
-    fi
-    for buffer in "${BUFFERS_ARR[@]}"; do
-        total=0
-        pending=0
-        for pair in "${COMBOS[@]}"; do
+if [[ ${#MODEL_SPECS[@]} -gt 0 ]]; then
+    # --- Model-specs mode: per-model combos ---
+    echo "Model specs:"
+    declare -A MODEL_COMBOS
+    MODEL_NAMES=()
+    for spec in "${MODEL_SPECS[@]}"; do
+        run_name="${spec%%=*}"
+        combos_str="${spec#*=}"
+        if [[ -z "$run_name" ]] || [[ -z "$combos_str" ]]; then
+            echo "Error: invalid --model-specs entry (expected run_name=score:nms,...): $spec"
+            exit 1
+        fi
+        run_dir="$ROOT_RUN_DIR_EXPANDED/$run_name"
+        if [[ ! -d "$run_dir" ]]; then
+            echo "Error: run directory missing for model spec: $run_dir"
+            exit 1
+        fi
+        IFS=',' read -ra PAIRS <<< "$combos_str"
+        validated_pairs=()
+        for pair in "${PAIRS[@]}"; do
             score="${pair%%:*}"
             nms="${pair##*:}"
-            total=$((total + 1))
-            pending=$((pending + 1))
-            safe_score="${score//./p}"
-            safe_nms="${nms//./p}"
-            job_name_run="${JOB_NAME}_${run_name}_buf${buffer}_s${safe_score}_n${safe_nms}"
-            export ROOT_RUN_DIR="$ROOT_RUN_DIR_EXPANDED"
-            export RUN_NAME="$run_name"
-            export TEST_CATS_DIR="$TEST_CATS_DIR_EXPANDED"
-            export PREDS_DIR
-            export SCORE_THRESH="$score"
-            export NMS_THRESH="$nms"
-            export MAG_LIMIT
-            export BUFFER="$buffer"
-            export LINKING_LENGTHS
-            export MATCH_RAD
-            export SKIP_LSST
-
-            SBATCH_CMD=(
-                sbatch
-                "--job-name=$job_name_run"
-                "--output=${LOG_DIR}/${job_name_run}.%j.%N.out"
-                "--error=${LOG_DIR}/${job_name_run}.%j.%N.err"
-                "--account=$ACCOUNT"
-                "--partition=$PARTITION"
-                "--exclude=$EXCLUDE"
-                "--constraint=$CONSTRAINT"
-                "--nodes=$NODES"
-                "--ntasks-per-node=$NTASKS_PER_NODE"
-                "--cpus-per-task=$CPUS"
-                "--mem=$MEMORY"
-                "--time=$TIME_LIMIT"
-                "--mail-user=$MAIL_USER"
-                "--mail-type=$MAIL_TYPE"
-                "$JOB_SCRIPT"
-            )
-            echo "Command:$(printf ' %q' "${SBATCH_CMD[@]}")"
-            if [[ "$DRY_RUN" == "true" ]]; then
-                echo "Dry run for run=$run_name buffer=$buffer score=$score nms=$nms -- no job submitted."
-            else
-                "${SBATCH_CMD[@]}"
+            if [[ -z "$score" ]] || [[ -z "$nms" ]]; then
+                echo "Error: invalid combo in --model-specs (expected score:nms): $pair"
+                exit 1
             fi
-            echo ""
+            awk -v x="$score" 'BEGIN{exit !(x+0>=0 && x+0<=1)}' || {
+                echo "Error: score threshold out of range [0,1]: $score"
+                exit 1
+            }
+            awk -v x="$nms" 'BEGIN{exit !(x+0>=0 && x+0<=1)}' || {
+                echo "Error: nms threshold out of range [0,1]: $nms"
+                exit 1
+            }
+            validated_pairs+=("${score}:${nms}")
         done
-        echo "Run=$run_name buffer=$buffer total=$total pending=$pending"
-        if [[ "$pending" -eq 0 ]]; then
-            echo "No pending combos for run=$run_name buffer=$buffer."
-            echo ""
-        fi
+        MODEL_COMBOS["$run_name"]="${validated_pairs[*]}"
+        MODEL_NAMES+=("$run_name")
+        echo "  ${run_name}: ${validated_pairs[*]}"
     done
-done
+    echo ""
+
+    for run_name in "${MODEL_NAMES[@]}"; do
+        run_dir="$ROOT_RUN_DIR_EXPANDED/$run_name"
+        IFS=' ' read -ra COMBOS_ARR <<< "${MODEL_COMBOS[$run_name]}"
+        for buffer in "${BUFFERS_ARR[@]}"; do
+            total="${#COMBOS_ARR[@]}"
+            pending="$total"
+            for pair in "${COMBOS_ARR[@]}"; do
+                score="${pair%%:*}"
+                nms="${pair##*:}"
+                submit_one "$run_name" "$buffer" "$score" "$nms"
+            done
+            echo "Run=$run_name buffer=$buffer total=$total pending=$pending"
+        done
+    done
+else
+    # --- Legacy mode: run-names × thresholds ---
+    build_combos() {
+        local -n out_ref=$1
+        out_ref=()
+        if [[ "$COMBO" == "true" ]]; then
+            for s in "${SCORE_THRESH_ARR[@]}"; do
+                for n in "${NMS_THRESH_ARR[@]}"; do
+                    out_ref+=("${s}:${n}")
+                done
+            done
+        else
+            if [[ "${#SCORE_THRESH_ARR[@]}" -ne "${#NMS_THRESH_ARR[@]}" ]]; then
+                echo "Error: --score-thresholds and --nms-thresholds must have the same length for index pairing (got ${#SCORE_THRESH_ARR[@]} vs ${#NMS_THRESH_ARR[@]}). Use --combo for cartesian product."
+                exit 1
+            fi
+            for i in "${!SCORE_THRESH_ARR[@]}"; do
+                out_ref+=("${SCORE_THRESH_ARR[$i]}:${NMS_THRESH_ARR[$i]}")
+            done
+        fi
+    }
+
+    COMBOS=()
+    build_combos COMBOS
+
+    for run_name in "${RUN_NAMES[@]}"; do
+        run_dir="$ROOT_RUN_DIR_EXPANDED/$run_name"
+        if [[ ! -d "$run_dir" ]]; then
+            echo "Warning: run directory missing, skipping: $run_dir"
+            continue
+        fi
+        for buffer in "${BUFFERS_ARR[@]}"; do
+            total=0
+            pending=0
+            for pair in "${COMBOS[@]}"; do
+                score="${pair%%:*}"
+                nms="${pair##*:}"
+                total=$((total + 1))
+                pending=$((pending + 1))
+                submit_one "$run_name" "$buffer" "$score" "$nms"
+            done
+            echo "Run=$run_name buffer=$buffer total=$total pending=$pending"
+            if [[ "$pending" -eq 0 ]]; then
+                echo "No pending combos for run=$run_name buffer=$buffer."
+                echo ""
+            fi
+        done
+    done
+fi

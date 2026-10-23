@@ -2,7 +2,7 @@
 #SBATCH -J fof_cls
 #SBATCH --output=/projects/bfhm/yse2/logs/fof_classify/fof_cls.%j.%N.out
 #SBATCH --error=/projects/bfhm/yse2/logs/fof_classify/fof_cls.%j.%N.err
-#SBATCH --account=bfhm-delta-cpu
+#SBATCH --account=bdsp-delta-cpu
 #SBATCH --partition=cpu
 #SBATCH --exclude=cn001,cn002,cn003
 #SBATCH --constraint="work"
@@ -25,8 +25,9 @@ PREDS_DIR="${PREDS_DIR:-eval}"
 SCORE_THRESH="${SCORE_THRESH:-0.4}"
 NMS_THRESH="${NMS_THRESH:-0.55}"
 MAG_LIMIT="${MAG_LIMIT:-gold}"
-BUFFER="${BUFFER:-1}"
-LINKING_LENGTHS="${LINKING_LENGTHS:-1.0 2.0}"
+BUFFER="${BUFFER:-2}"
+LINKING_LENGTHS="${LINKING_LENGTHS:-1.0 0.5}"
+DMAG_SIG="${DMAG_SIG:-2.0}"
 MATCH_RAD="${MATCH_RAD:-}"
 SKIP_LSST="${SKIP_LSST:-false}"
 # only need expansion of ~ below to check if they exist or not later on in this script
@@ -74,6 +75,7 @@ echo "Score thresh: $SCORE_THRESH"
 echo "NMS thresh: $NMS_THRESH"
 echo "Mag limit: $MAG_LIMIT"
 echo "Buffer: $BUFFER"
+echo "DMag sig: $DMAG_SIG"
 echo "Linking lengths: $LINKING_LENGTHS"
 echo "Match rad: ${MATCH_RAD:-<per-linking-length>}"
 echo "Skip LSST: $SKIP_LSST"
@@ -92,6 +94,7 @@ CMD=(
     --nms-thresh "$NMS_THRESH"
     --mag-limit "$MAG_LIMIT"
     --buffer "$BUFFER"
+    --dmag-sig "$DMAG_SIG"
     --linking-lengths "${LINKING_LENGTH_ARR[@]}"
 )
 if [[ -n "$MATCH_RAD" ]]; then

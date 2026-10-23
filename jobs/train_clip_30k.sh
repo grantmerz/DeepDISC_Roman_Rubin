@@ -1,16 +1,16 @@
 #!/bin/bash
-#SBATCH -J clip5_30k
-#SBATCH --output=/projects/bfhm/yse2/logs/training_logs/clip5_30k_out.%j.out
-#SBATCH --error=/projects/bfhm/yse2/logs/training_logs/clip5_30k_err.%j.err
-#SBATCH --account=bdsp-delta-gpu
+#SBATCH -J cl15_clip5_30k_lprj_resume
+#SBATCH --output=/projects/bfhm/yse2/logs/training_logs/cl15_clip5_30k_lprj_resume_out.%j.out
+#SBATCH --error=/projects/bfhm/yse2/logs/training_logs/cl15_clip5_30k_lprj_resume_err.%j.err
+#SBATCH --account=bfhm-delta-gpu
 #SBATCH --partition=gpuH200x8
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=4         # Using 4 GPUs on the node
+#SBATCH --gpus-per-node=4        # Using 4 GPUs on the node
 #SBATCH --mem=128G    
 #SBATCH --ntasks-per-node=1        # one process per GPU for distributed training
 #SBATCH --cpus-per-task=64       # 64 CPUs divided by GPUs for data loading
 #SBATCH --constraint="work"
-#SBATCH --time=14:00:00
+#SBATCH --time=07:45:00
 #SBATCH --mail-user=yse2@illinois.edu
 #SBATCH --mail-type=ALL
 
@@ -36,9 +36,12 @@ CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k.py"
 # Eventually we should just have train_30k.json to default have keypoints 
 # and not have to specify a separate file for keypoints
 TRAIN_FILE="/u/yse2/lsst_data/annotations_lvl5/train_30k_keypoints.json" 
-EVAL_FILE="/u/yse2/lsst_data/annotations_lvl5/val_4k_keypoints.json"  
-RUN_NAME="clip5_30k_4h200_bs32_ep50"
-OUTPUT_DIR="./lsst_runs/${RUN_NAME}"
+EVAL_FILE="/u/yse2/lsst_data/annotations_lvl5/val_4k_keypoints.json"
+RUN_NAME="clip5_30k_4h200_bs192_ep50_lprj"
+OUTPUT_DIR="/u/yse2/lsst_runs/${RUN_NAME}"
+# RUN_NAME="clip5_30k_2a100_bs64_iter0_30"
+# RUN_NAME="clip5_30k_2h200_bs96_iter0_30"
+# OUTPUT_DIR="/u/yse2/test_lsst_runs/${RUN_NAME}"
 
 echo "Launching DeepDISC training job..."
 

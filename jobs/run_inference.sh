@@ -60,6 +60,12 @@ case $MODEL_TYPE in
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints.json"
         ;;
+    "standard_30k_pad")
+        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_lsst_30k_pad.py"
+        RUN_NAME="lsst5_pad_30k_4h200_bs192_ep50"
+        EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints.json"
+        TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints.json"
+        ;;
     "standard_all")
         CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_lsst_100k.py"
         RUN_NAME="lsst5_all_4h200_bs192_ep20"
@@ -83,6 +89,18 @@ case $MODEL_TYPE in
         RUN_NAME="clip5_all_4h200_bs64_ep20"
         EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_keypoints.json"
         TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_keypoints.json"
+        ;;
+    "ups_30k")
+        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_ups_lsst_30k.py"
+        RUN_NAME="lsst5_ups_30k_4h200_bs192_ep50"
+        EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints_wcs.json"
+        TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints_wcs.json"
+        ;;
+    "ups_30k_ps13")
+        CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_ps13_ups_lsst_30k.py"
+        RUN_NAME="lsst5_ps13_ups_30k_4h200_bs192_ep50"
+        EVAL_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/val_4k_keypoints_wcs.json"
+        TEST_DATA_FN="${DATA_ROOT_DIR}/${ANNS_FOLDER}/test_8k_keypoints_wcs.json"
         ;;
     "comb_30k")
         CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_comb_lsst_roman_30k.py"
@@ -175,3 +193,4 @@ echo "$SUBMIT_TIME  $START_TIME  $END_TIME"
 echo 
 echo "ELAPSED TIME: $ELAPSED_FMT" 
 echo "============================================================"
+ 

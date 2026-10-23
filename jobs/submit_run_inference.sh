@@ -4,15 +4,52 @@ set -euo pipefail
 # Accepts all SLURM resource options and run_inference.py args
 # Inference args are exported as environment variables consumed by the job script
 # submit_run_inference.sh -j test_infer_sall --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -t 00:40:00 --model-type standard_all --data-split test --score-thresholds "0.45 0.55" --nms-thresholds "0.65 0.65" --no-combo --dry-run
+# ./jobs/submit_run_inference.sh -j test_b30k --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -t 00:40:00 --model-type standard_30k --data-split test --score-thresholds "0.4 0.5" --nms-thresholds "0.55 0.6" --no-combo --dry-run
 # ./jobs/submit_run_inference.sh -j eval_infer_c30k_lgroi -g 2 -p gpuA100x4-interactive -t 00:45:00 --model-type clip_30k --run-name clip5_flatten_30k_4h200_bs64_ep15_resume --score-thresholds "0.45 0.5 0.55 0.6 0.65" --nms-thresholds "0.45 0.5 0.55 0.6 0.65"
 # ./jobs/submit_run_inference.sh -j test_infer_c30k_lgroi --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4-interactive -t 00:25:00 --model-type clip_30k --data-split test --run-name clip5_flatten_30k_4h200_bs64_ep15_resume --score-thresholds "0.4" --nms-thresholds "0.55"
 
+# ./jobs/submit_run_inference.sh -j eval_infer_u30k -g 2 -p gpuH200x8 -t 05:00:00 --model-type ups_30k
+# ./jobs/submit_run_inference.sh -j eval_infer_u30k -g 2 -t 03:00:00 --model-type ups_30k --resume
+# ./jobs/submit_run_inference.sh -j tinfer_u30k -g 2 -p gpuA100x4-interactive -t 00:45:00 --model-type ups_30k --data-split test --score-thresholds "0.65" --nms-thresholds "0.65"
+
 # ./jobs/submit_run_inference.sh -j eval_infer_c30k_comb -g 2 -p gpuA100x4 -m 96G -t 01:30:00 --model-type comb_30k --score-thresholds "0.45 0.5 0.55 0.6 0.65" --nms-thresholds "0.45 0.5 0.55 0.6 0.65" --resume
+# ./jobs/submit_run_inference.sh -j tinfer_comb30k --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4 -t 00:20:00 -m 96G --model-type comb_30k --data-split test --score-thresholds "0.65" --nms-thresholds "0.7" --no-combo
 # ./jobs/submit_run_inference.sh -j test_infer_c30k_comb --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4 -t 00:35:00 -m 96G --model-type comb_30k --data-split test --score-thresholds "0.4 0.55 0.65" --nms-thresholds "0.55 0.65 0.65" --no-combo
+# ./jobs/submit_run_inference.sh -j test_infer_c30k_comb --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4 -t 00:20:00 -m 96G --model-type comb_30k --data-split test --score-thresholds "0.65" --nms-thresholds "0.65" --no-combo
+# ./jobs/submit_run_inference.sh -j test_comb_roman2 --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4 -t 00:20:00 -m 96G --model-type comb_30k --data-split test --score-thresholds "0.65" --nms-thresholds "0.65" --no-combo
 
 # ./jobs/submit_run_inference.sh -j eval_infer_c30k_distill -g 2 -p gpuA100x4 -t 01:00:00 --model-type distill_30k --score-thresholds "0.45 0.5 0.55 0.6 0.65" --nms-thresholds "0.45 0.5 0.55 0.6 0.65"
 # ./jobs/submit_run_inference.sh -j test_infer_c30k_distill --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4 -t 00:25:00 --model-type distill_30k --data-split test --score-thresholds "0.65" --nms-thresholds "0.65"
 # ./jobs/submit_run_inference.sh -j tinfer_c30k --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4-interactive -t 00:45:00 --data-split test --score-thresholds "0.4" --nms-thresholds "0.55"
+
+
+# ./jobs/submit_run_inference.sh -j tinfer_b30k_musig --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -t 00:30:00 --model-type standard_30k --data-split test --score-thresholds "0.65" --nms-thresholds "0.65" --run-name "lsst5_30k_4h200_bs192_ep50_musigma"
+# ./jobs/submit_run_inference.sh -j tinfer_b30k_pad --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -t 00:30:00 --model-type standard_30k --data-split test --score-thresholds "0.65" --nms-thresholds "0.65" --run-name "lsst5_30k_4h200_bs192_ep50_musigma"
+# ./jobs/submit_run_inference.sh -j tinfer_b30k_pad --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -t 00:30:00 --model-type standard_30k_pad --data-split test --score-thresholds "0.65" --nms-thresholds "0.65"
+# ./jobs/submit_run_inference.sh -j tinfer_u30k_ps13 --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -t 00:45:00 --model-type ups_30k_ps13 --data-split test --score-thresholds "0.65" --nms-thresholds "0.65"
+
+# ========= Paper Runs ==========
+# test_bs 72: ~/jobs/submit_run_inference.sh -j peval_infer_b30k_pad -g 3 -c 48 -m 96G -t 08:30:00 --model-type standard_30k_pad (3hr,58m)
+# ---------------------------------------------
+# Total time for 20 batches (1429 imgs) per GPU: 57.39s
+#   Average inference time per batch: 2.71s
+#   Total inference time: 54.22s
+#   Total data loading time: 3.17s
+# ---------------------------------------------
+# Per-Image Timing Statistics:
+#   Avg inference: 37.9ms/img
+#   Avg data loading: 1.0ms/img
+#   Avg total: 38.7ms/img
+#   Throughput: 25.8 imgs/sec
+# ---------------------------------------------
+# test_bs 72: ~/jobs/submit_run_inference.sh -j peval_infer_b30k_ps13 -g 3 -c 48 -m 96G -t 09:00:00 --model-type ups_30k_ps13
+# ./jobs/submit_run_inference.sh -j pap_tinfer_b30k --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -t 00:30:00 --model-type standard_30k --data-split test --score-thresholds "0.5" --nms-thresholds "0.6"
+# ./jobs/submit_run_inference.sh -j pap_tinfer_u30k --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -t 00:45:00 --model-type ups_30k --data-split test --score-thresholds "0.6" --nms-thresholds "0.65"
+# ./jobs/submit_run_inference.sh -j pap_tinfer_c30k --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -t 00:35:00 --model-type comb_30k --data-split test --score-thresholds "0.6" --nms-thresholds "0.7"
+# ./jobs/submit_run_inference.sh -j pap_tinfer_bsig30k --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -t 00:30:00 --model-type standard_30k --data-split test --score-thresholds "0.5" --nms-thresholds "0.6" --run-name "lsst5_30k_4h200_bs192_ep50_musigma"
+
+# OPTIMAL w/ bs=96: ~/jobs/submit_run_inference.sh -j peval_infer_b30k_pad -g 2 -p gpuH200x8 -t 08:00:00 --model-type standard_30k_pad
+# OPTIMAL w/ bs=96 ~/jobs/submit_run_inference.sh -j peval_infer_b30k_ps13 -g 2 -p gpuH200x8 -t 09:00:00 --model-type ups_30k_ps13
 # EMBEDDINGS:
 # ./jobs/submit_run_inference.sh -j tinfer_c30k_emb --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4-interactive -t 00:45:00 --model-type clip_30k_emb --data-split test --score-thresholds "0.4" --nms-thresholds "0.55" --extract-embeddings
 # ./jobs/submit_run_inference.sh -j tinfer_c30k_lgroi_emb15 --log-dir /projects/bfhm/yse2/logs/inference/test -g 2 -p gpuA100x4-interactive -t 00:25:00 --model-type clip_30k_emb --data-split test --run-name clip5_flatten_30k_4h200_bs64_ep15 --cfgfile /u/yse2/deepdisc/configs/solo/swin_clip_lsst_roman_30k_flatten.py --score-thresholds "0.4" --nms-thresholds "0.55" --extract-embeddings
@@ -22,13 +59,13 @@ set -euo pipefail
 DEFAULT_JOB_SCRIPT="$HOME/jobs/run_inference.sh"
 
 # SLURM defaults (match the #SBATCH defaults in run_inference.sh)
-DEFAULT_JOB_NAME="eval_infer_s30k"
+DEFAULT_JOB_NAME="eval_infer_u30k"
 DEFAULT_LOG_DIR="/projects/bfhm/yse2/logs/inference/eval"
-DEFAULT_ACCOUNT="bdsp-delta-gpu"
+DEFAULT_ACCOUNT="bfhm-delta-gpu"
 DEFAULT_PARTITION="gpuA100x4"
 DEFAULT_GPUS=4
 DEFAULT_CONSTRAINT="projects,work"
-DEFAULT_EXCLUDE="gpua003,gpua008"
+DEFAULT_EXCLUDE="gpua003,gpua008,gpua004"
 DEFAULT_NODES=1
 DEFAULT_NTASKS_PER_NODE=1
 DEFAULT_CPUS_PER_TASK=32
@@ -40,8 +77,10 @@ DEFAULT_MAIL_TYPE="ALL"
 # Inference defaults (match the hardcoded defaults in run_inference.sh)
 DEFAULT_MODEL_TYPE="standard_30k"
 DEFAULT_DATA_SPLIT="eval"
-DEFAULT_SCORE_THRESHOLDS="0.55"
-DEFAULT_NMS_THRESHOLDS="0.65"
+# DEFAULT_SCORE_THRESHOLDS="0.55"
+# DEFAULT_NMS_THRESHOLDS="0.65"
+DEFAULT_SCORE_THRESHOLDS="0.2 0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75 0.8 0.85 0.9"
+DEFAULT_NMS_THRESHOLDS="0.25 0.3 0.35 0.4 0.45 0.5 0.55 0.6 0.65 0.7 0.75"
 DEFAULT_TOPK=2000
 DEFAULT_DATA_ROOT_DIR="~/lsst_data"
 DEFAULT_ANNS_FOLDER="annotations_lvl5"
@@ -68,7 +107,7 @@ SLURM Options:
         --mail-type TYPE           Notification events: ALL, BEGIN, END, FAIL (default: $DEFAULT_MAIL_TYPE if --mail-user set)
 
 Inference Options:
-    --model-type TYPE              Model type: standard_30k, standard_all, clip_30k, clip_30k_emb, clip_all, comb_30k, distill_30k (default: $DEFAULT_MODEL_TYPE)
+    --model-type TYPE              Model type: standard_30k, standard_30k_pad, standard_all, clip_30k, clip_30k_emb, clip_all, comb_30k, ups_30k, ups_30k_ps13, distill_30k (default: $DEFAULT_MODEL_TYPE)
     --run-name NAME                Override run name (used instead of model-type default)
     --data-split SPLIT             Data split: eval or test (default: $DEFAULT_DATA_SPLIT)
     --cfgfile PATH                 Override config file passed to run_inference.py (optional)
@@ -175,8 +214,8 @@ if [[ ! "$DATA_SPLIT" =~ ^(eval|test)$ ]]; then
     echo "Error: --data-split must be 'eval' or 'test'"
     exit 1
 fi
-if [[ ! "$MODEL_TYPE" =~ ^(standard_30k|standard_all|clip_30k|clip_30k_emb|clip_all|comb_30k|distill_30k)$ ]]; then
-    echo "Error: --model-type must be one of: standard_30k, standard_all, clip_30k, clip_30k_emb, clip_all, comb_30k, distill_30k"
+if [[ ! "$MODEL_TYPE" =~ ^(standard_30k|standard_30k_pad|standard_all|clip_30k|clip_30k_emb|clip_all|comb_30k|ups_30k|ups_30k_ps13|distill_30k)$ ]]; then
+    echo "Error: --model-type must be one of: standard_30k, standard_30k_pad, standard_all, clip_30k, clip_30k_emb, clip_all, comb_30k, ups_30k, ups_30k_ps13, distill_30k"
     exit 1
 fi
 
