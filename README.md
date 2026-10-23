@@ -159,7 +159,7 @@ step 6, the batch size and the number of epochs there.
 | DeepDISC RubinPadded | `swin_lsst_30k_pad.py` | `train_model_30k.py` |
 | DeepDISC PatchSize13 | `swin_ps13_ups_lsst_30k.py` | `train_model_30k.py` |
 | DeepDISC Rubin+Roman | `swin_comb_lsst_roman_30k.py` | `run_model_job_30k_comb.py` with `swin_comb_job_keypoint_30k.py`* |
-| Distillation (Future directions) | `swin_distill_job_keypoint_30k.py` | `run_model_job_30k_distill.py` + `swin_distill_keypoints.sh`* |
+| Distillation (Future directions) | `swin_distill_lsst_roman_30k.py` | `run_model_job_30k_distill.py` + `jobs/swin_distill_keypoints.sh` |
 | CLIP (Future directions) | `swin_clip_lsst_roman_30k.py` | `train_clip_model_30k.py` + `jobs/train_clip_30k.sh` |
 
 \* In `/work/hdd/bdsp/g4merz/RubinRoman/` on NCSA Delta. `swin_lsst_keypoints.sh` has since been reused for

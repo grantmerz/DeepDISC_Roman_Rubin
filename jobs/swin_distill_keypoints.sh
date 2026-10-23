@@ -30,7 +30,7 @@ echo "Running on GPUs:"
 nvidia-smi --query-gpu=gpu_name,gpu_bus_id,memory.total,memory.used --format=csv
 echo "Defining training parameters..."
 # locations of config and data files
-CFG_FILE="/work/hdd/bdsp/g4merz/RubinRoman/configs/solo/swin_distill_job_keypoint_30k.py"
+CFG_FILE="configs/solo/swin_distill_lsst_roman_30k.py"
 TRAIN_FILE="/work/hdd/bdsp/yse2/lsst_data/annotations_lvl5/train_30k_keypoints_wcs.json"
 EVAL_FILE="/work/hdd/bdsp/yse2/lsst_data/annotations_lvl5/val_4k_keypoints_wcs.json"
 

@@ -33,7 +33,7 @@ numclasses = len(metadata.classes)
 # ---------------------------------------------------------------------------- #
 # Get values from templates
 from ..COCO.cascade_mask_rcnn_swin_b_in21k_50ep import dataloader, model, train, lr_multiplier, optimizer
-from ..custom.image_readers import DualRubinRubinImageReader, DualRomanRubinImageReader, RomanRubinImageReader
+from ..custom.image_readers import DualRomanRubinImageReader, RomanRubinImageReader
 from ..custom.mappers import CLIPMapper, CLIPEvalMapper 
 import deepdisc.model.loaders as loaders
 
