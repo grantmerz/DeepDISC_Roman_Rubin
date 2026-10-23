@@ -1,0 +1,62 @@
+#!/bin/bash
+#SBATCH -J res3_lsst5_ups_30k
+#SBATCH --output=/projects/bfhm/yse2/logs/training_logs/res3_lsst5_ups_30k.%j.out
+#SBATCH --error=/projects/bfhm/yse2/logs/training_logs/res3_lsst5_ups_30k.%j.err
+#SBATCH --account=bdsp-delta-gpu
+#SBATCH --partition=gpuH200x8
+#SBATCH --nodes=1
+#SBATCH --gpus-per-node=4        # Using 4 GPUs on the node
+#SBATCH --mem=128G
+#SBATCH --ntasks-per-node=1        # one process per GPU for distributed training
+#SBATCH --cpus-per-task=64       # 64 CPUs divided by GPUs for data loading
+#SBATCH --constraint="work"
+#SBATCH --time=03:00:00
+#SBATCH --mail-user=yse2@illinois.edu
+#SBATCH --mail-type=ALL
+
+### Environment and Setup
+echo "Job Started: $(date)"
+echo "Node: $(hostname)"
+echo "Job ID: $SLURM_JOB_ID"
+echo "GPUs: $CUDA_VISIBLE_DEVICES"
+
+cd ~
+# GPU and CUDA checks
+# clears GPU cache to avoid Cublas errors
+echo "Checking CUDA and GPU status..."
+python -c "import torch; torch.cuda.empty_cache(); print('PyTorch CUDA version: ', torch.version.cuda); print('CuDNN version:', torch.backends.cudnn.version())"
+
+# output current GPUs
+echo "Running on GPUs:"
+nvidia-smi --query-gpu=gpu_name,gpu_bus_id,memory.total,memory.used --format=csv
+echo "Defining training parameters..."
+# locations of config and data files
+CFG_FILE="/u/yse2/deepdisc/configs/solo/swin_ups_lsst_30k.py"
+# REPLACE WITH KEYPOINTS FILE 
+# Eventually we should just have train_30k.json to default have keypoints 
+# and not have to specify a separate file for keypoints
+TRAIN_FILE="/u/yse2/lsst_data/annotations_lvl5/train_30k_keypoints_wcs.json" 
+EVAL_FILE="/u/yse2/lsst_data/annotations_lvl5/val_4k_keypoints_wcs.json"
+# RUN_NAME="lsst5_ups_30k_4h200_bs192_ep50"
+# OUTPUT_DIR="/u/yse2/lsst_runs/${RUN_NAME}"
+# RUN_NAME="lsst5_ups_30k_4h200_bs192_ep50_resume"
+# RUN_NAME="lsst5_ups_30k_4h200_bs192_ep50_resume_8"
+RUN_NAME="lsst5_ups_30k_4h200_bs192_ep50_resume_2"
+OUTPUT_DIR="/u/yse2/lsst_runs/${RUN_NAME}"
+
+# RUN_NAME="lsst5_ups_30k_2a100_bs64_iter0_50"
+# RUN_NAME="lsst5_ups_30k_2h200_bs96_val"
+# OUTPUT_DIR="/u/yse2/test_lsst_runs/${RUN_NAME}"
+echo "Launching DeepDISC training job..."
+
+python train_ups_model_30k.py \
+    --cfgfile ${CFG_FILE} \
+    --train-metadata ${TRAIN_FILE} \
+    --eval-metadata ${EVAL_FILE} \
+    --num-gpus 4 \
+    --run-name ${RUN_NAME} \
+    --output-dir ${OUTPUT_DIR}
+
+--cfgfile "/u/yse2/deepdisc/configs/solo/swin_ups_lsst_30k.py" --train-metadata "/u/yse2/lsst_data/annotations_lvl5/train_30k_keypoints_wcs.json" --eval-metadata "/u/yse2/lsst_data/annotations_lvl5/val_4k_keypoints_wcs.json" --num-gpus 2 --run-name "ups_test" --output-dir "/u/yse2/test_lsst_runs/ups_test"
+echo "Training script finished."
+echo "Job Finished: $(date)"
