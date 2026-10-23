@@ -8,7 +8,9 @@ Coverage map (paper -> tests):
   Table object_flags         -> TestStage2ObjectFlags
   Table stage2_labels +
     adjacency-based blends   -> TestGroupBlendFlags
-  Significant blend defn     -> TestSignificantBlend
+  Significant blend defn
+    (Delta m_12 over a blend's
+     connected components)   -> TestSignificantBlend
   classify_stage2 plumbing
     (bulk missed/spurious,
      isolated batch, complex
@@ -43,7 +45,6 @@ from fof_classify import (
     classify_stg1,
     classify_stage2,
     get_stage1_counts,
-    add_group_blend_props,
     add_sig_blend_flag,
 )
 
@@ -66,6 +67,19 @@ def run_group(sep_matrix, match_rad=MATCH_RAD):
 def pair_dict(pairs):
     """{det_local_idx: truth_local_idx}"""
     return {di: ti for di, ti, _ in pairs}
+
+
+def unrec(r, prefix=''):
+    """Membership of an unrecognized blend: part of a blend but not resolved.
+
+    fof_classify no longer writes a separate is_unrec_blend flag. Within a blend
+    group every connected object is either fully resolved or belongs to an
+    unrecognized blend (survivor/absorbed truths, the detections around them),
+    so this reproduces the old flag for both detection and truth rows.
+    """
+    p = f'{prefix}_' if prefix else ''
+    return np.logical_and(r[f'{p}is_part_of_blend'],
+                          np.logical_not(r[f'{p}is_resolved_blend']))
 
 
 # ----------------------------------------------------------------------------
@@ -277,7 +291,7 @@ class TestStage2ObjectFlags:
         # 1 connected truth only -> NOT a blend, no blend flags anywhere
         for r in (det_r, truth_r):
             assert not r['is_part_of_blend'].any()
-            assert not r['is_unrec_blend'].any()
+            assert not unrec(r).any()
             assert not r['is_resolved_blend'].any()
 
     def test_absorbed_truth(self):
@@ -310,16 +324,16 @@ class TestGroupBlendFlags:
         assert truth_r['is_resolved_blend'].all()
         assert det_r['is_resolved_blend'].all()
         assert truth_r['is_part_of_blend'].all()
-        assert not truth_r['is_unrec_blend'].any()
+        assert not unrec(truth_r).any()
         assert not truth_r['is_survivor'].any()
         assert not truth_r['is_absorbed'].any()
 
     def test_unrecognized_blend_flags_broadcast(self):
         _, _, det_r, truth_r = run_group([[0.1, 0.5]])
         # all connected objects carry blend + unrec flags
-        assert det_r['is_part_of_blend'][0] and det_r['is_unrec_blend'][0]
+        assert det_r['is_part_of_blend'][0] and unrec(det_r)[0]
         assert truth_r['is_part_of_blend'].all()
-        assert truth_r['is_unrec_blend'].all()
+        assert unrec(truth_r).all()
         assert not truth_r['is_resolved_blend'].any()
 
     def test_edgeless_truth_does_not_create_blend(self):
@@ -353,8 +367,8 @@ class TestGroupBlendFlags:
         assert truth_r['is_survivor'][0] and truth_r['is_survivor'][2]
         assert truth_r['is_absorbed'][1]
         assert truth_r['is_part_of_blend'].all()
-        assert truth_r['is_unrec_blend'].all()
-        assert det_r['is_unrec_blend'].all()
+        assert unrec(truth_r).all()
+        assert unrec(det_r).all()
 
     def test_disjoint_isolated_pairs_in_one_group_flagged_as_blend(self):
         # Two FOF-chained but physically unrelated pairs share one group:
@@ -375,7 +389,7 @@ class TestGroupBlendFlags:
         # T0,T1 form a real unrecognized blend (D0 only reaches T0); T2-D1
         # is a separate, fully disconnected isolated match chained into the
         # same FOF group. D1 has zero edge into the blend, yet still gets
-        # is_unrec_blend/is_survivor -- group-wide connected-truth counting
+        # unrecognized-blend membership -- group-wide connected-truth counting
         # contaminates an otherwise-unrelated match in the same group.
         d = np.array([0.1, 500.1]); t = np.array([0.0, 0.6, 500.0])
         sep = np.abs(d[:, None] - t[None, :])
@@ -384,8 +398,8 @@ class TestGroupBlendFlags:
         assert adj[1, 0] == 0 and adj[1, 1] == 0   # D1 has no edge into the blend
         assert truth_r['is_absorbed'][1]           # T1: the actual absorbed truth
         assert truth_r['is_survivor'][0] and truth_r['is_survivor'][2]
-        assert det_r['is_unrec_blend'][1]          # D1 contaminated too
-        assert truth_r['is_unrec_blend'][2]        # T2 contaminated too
+        assert unrec(det_r)[1]          # D1 contaminated too
+        assert unrec(truth_r)[2]        # T2 contaminated too
 
     def test_resolved_component_mislabeled_unrec_by_disconnected_component(self):
         # Two real, mutually disconnected blends chained into ONE FOF group:
@@ -407,8 +421,8 @@ class TestGroupBlendFlags:
         assert truth_r['is_matched'][2] and truth_r['is_matched'][3]
         assert not truth_r['is_resolved_blend'][2]
         assert not truth_r['is_resolved_blend'][3]
-        assert truth_r['is_unrec_blend'][2] and truth_r['is_unrec_blend'][3]
-        assert det_r['is_unrec_blend'][1] and det_r['is_unrec_blend'][2]
+        assert unrec(truth_r)[2] and unrec(truth_r)[3]
+        assert unrec(det_r)[1] and unrec(det_r)[2]
 
     def test_resolved_blend_with_shred_coexist(self):
         # paper: "A single group can contain both shredding and a blend"
@@ -426,69 +440,100 @@ class TestGroupBlendFlags:
 
 
 # ----------------------------------------------------------------------------
-# Significant blends (add_group_blend_props / add_sig_blend_flag)
+# Significant blends (add_sig_blend_flag)
+#
+# Paper: order a blend's components by i-band magnitude, m_1 <= m_2 <= ...,
+# Delta m_12 = m_2 - m_1, and call the blend significant if
+# Delta m_12 < Delta m_sig. Components are the truths connected to a
+# detection (is_part_of_blend), so significance depends on the pipeline, and
+# a close pair a pipeline missed entirely is not one of its significant blends.
 # ----------------------------------------------------------------------------
 
-def _blend_df(groups):
-    """groups: {gid: (truth_mags, n_dets)} -> long-format frame."""
+def _blend_df(groups, prefix='dd'):
+    """groups: {gid: (truth_mags, n_dets[, connected])} -> long-format frame.
+
+    connected: per-truth list of {prefix}_is_part_of_blend values (default:
+    every truth is connected when the group has >=2 truths and >=1 detection).
+    """
     rows = []
-    for gid, (mags, n_det) in groups.items():
-        for m in mags:
+    for gid, spec in groups.items():
+        mags, n_det = spec[0], spec[1]
+        connected = spec[2] if len(spec) > 2 else [len(mags) >= 2 and n_det >= 1] * len(mags)
+        for m, c in zip(mags, connected):
             rows.append({'group_id': gid, 'catalog_key': 'lsst_truth',
-                         'mag_i': m})
+                         'mag_i': m, f'{prefix}_is_part_of_blend': bool(c)})
         for _ in range(n_det):
-            rows.append({'group_id': gid, 'catalog_key': 'dd_det',
-                         'mag_i': np.nan})
+            rows.append({'group_id': gid, 'catalog_key': f'{prefix}_det',
+                         'mag_i': np.nan, f'{prefix}_is_part_of_blend': any(connected)})
     return pd.DataFrame(rows)
 
 
 class TestSignificantBlend:
 
-    def test_counts_and_min_gap(self):
+    def test_dmag12_is_gap_between_two_brightest(self):
         df = _blend_df({0: ([24.0, 24.4, 26.0], 1), 1: ([22.0], 1)})
-        out = add_group_blend_props(df)
-        g0 = out[out['group_id'] == 0]
-        assert (g0['n_truth_in_group'] == 3).all()      # dets excluded from count
-        assert g0['min_truth_dmag_i'].iloc[0] == pytest.approx(0.4)
-        g1 = out[out['group_id'] == 1]
-        assert (g1['n_truth_in_group'] == 1).all()
-        assert g1['min_truth_dmag_i'].isna().all()
+        out = add_sig_blend_flag(df, 'dd', dmag_sig=1.0)
+        assert out.loc[out['group_id'] == 0, 'dd_dmag12'].to_numpy() == pytest.approx([0.4] * 4)  # 3 truths + 1 det
+        assert out.loc[out['group_id'] == 1, 'dd_dmag12'].isna().all()   # single truth
 
     def test_broadcast_to_detection_rows(self):
         df = _blend_df({0: ([23.0, 23.5], 2)})
-        out = add_sig_blend_flag(add_group_blend_props(df), dmag_sig=1.0)
+        out = add_sig_blend_flag(df, 'dd', dmag_sig=1.0)
         det_rows = out[out['catalog_key'] == 'dd_det']
-        assert (det_rows['n_truth_in_group'] == 2).all()
-        assert det_rows['is_sig_blend'].all()
+        assert det_rows['dd_is_sig_blend'].all()
+        assert det_rows['dd_dmag12'].to_numpy() == pytest.approx([0.5, 0.5])
 
     def test_strict_inequality(self):
         # paper: "less than dmag_sig" -> gap exactly equal is NOT significant
-        df = _blend_df({0: ([23.0, 24.0], 0)})
-        out = add_sig_blend_flag(add_group_blend_props(df), dmag_sig=1.0)
-        assert not out['is_sig_blend'].any()
+        df = _blend_df({0: ([23.0, 24.0], 1)})
+        out = add_sig_blend_flag(df, 'dd', dmag_sig=1.0)
+        assert not out['dd_is_sig_blend'].any()
 
-    def test_single_faint_straggler_does_not_mask_bright_pair(self):
-        # paper: min pairwise gap, not full spread
-        df = _blend_df({0: ([21.0, 21.3, 27.0], 0)})
-        out = add_sig_blend_flag(add_group_blend_props(df), dmag_sig=1.0)
-        assert out['is_sig_blend'].all()
+    def test_faint_third_component_does_not_mask_bright_pair(self):
+        df = _blend_df({0: ([21.0, 21.3, 27.0], 1)})
+        out = add_sig_blend_flag(df, 'dd', dmag_sig=1.0)
+        assert out['dd_is_sig_blend'].all()
 
-    def test_significance_is_detection_independent(self):
-        # a fully missed group (0 dets) can still be a significant blend
+    def test_close_faint_pair_does_not_make_blend_significant(self):
+        # Delta m_12 uses the two BRIGHTEST components, not the closest pair:
+        # m_2 - m_1 = 2.0 even though 23.0/23.1 are only 0.1 apart
+        df = _blend_df({0: ([21.0, 23.0, 23.1], 1)})
+        out = add_sig_blend_flag(df, 'dd', dmag_sig=1.0)
+        assert out['dd_dmag12'].iloc[0] == pytest.approx(2.0)
+        assert not out['dd_is_sig_blend'].any()
+
+    def test_missed_pair_is_not_a_significant_blend(self):
+        # paper: "a close pair that a pipeline failed to detect at all is not
+        # part of that pipeline's significant blend population"
         df = _blend_df({0: ([24.0, 24.2], 0)})
-        out = add_sig_blend_flag(add_group_blend_props(df), dmag_sig=1.0)
-        assert out['is_sig_blend'].all()
+        out = add_sig_blend_flag(df, 'dd', dmag_sig=1.0)
+        assert out['dd_dmag12'].isna().all()
+        assert not out['dd_is_sig_blend'].any()
+
+    def test_only_connected_truths_are_components(self):
+        # T1 (22.3) has no detection edge, so the components are 22.0 and 24.5
+        df = _blend_df({0: ([22.0, 22.3, 24.5], 2, [True, False, True])})
+        out = add_sig_blend_flag(df, 'dd', dmag_sig=1.0)
+        assert out['dd_dmag12'].iloc[0] == pytest.approx(2.5)
+        assert not out['dd_is_sig_blend'].any()
 
     def test_nan_mags(self):
-        df = _blend_df({0: ([23.0, np.nan], 0), 1: ([23.0, np.nan, 23.6], 0)})
-        out = add_sig_blend_flag(add_group_blend_props(df), dmag_sig=1.0)
-        assert not out[out['group_id'] == 0]['is_sig_blend'].any()   # <2 finite
-        assert out[out['group_id'] == 1]['is_sig_blend'].all()       # gap 0.6
+        df = _blend_df({0: ([23.0, np.nan], 1), 1: ([23.0, np.nan, 23.6], 1)})
+        out = add_sig_blend_flag(df, 'dd', dmag_sig=1.0)
+        assert not out[out['group_id'] == 0]['dd_is_sig_blend'].any()   # <2 finite
+        assert out[out['group_id'] == 1]['dd_is_sig_blend'].all()       # gap 0.6
+
+    def test_per_pipeline_prefix(self):
+        # the flag is computed from, and written to, the given pipeline's columns
+        df = _blend_df({0: ([23.0, 23.5], 1)}, prefix='lsst')
+        out = add_sig_blend_flag(df, 'lsst', dmag_sig=1.0)
+        assert out['lsst_is_sig_blend'].all()
+        assert 'dd_is_sig_blend' not in out.columns
 
     def test_missing_mag_col_raises(self):
-        df = _blend_df({0: ([23.0, 23.5], 0)}).drop(columns=['mag_i'])
+        df = _blend_df({0: ([23.0, 23.5], 1)}).drop(columns=['mag_i'])
         with pytest.raises(KeyError):
-            add_group_blend_props(df)
+            add_sig_blend_flag(df, 'dd', dmag_sig=1.0)
 
 
 # ----------------------------------------------------------------------------
@@ -521,7 +566,7 @@ def _build_e2e():
     # g1 isolated pair beyond radius (sep 1.5) -> spurious + missed
     ids['g1_T'] = add(1, 'lsst_truth', 0.0, 22.0)
     ids['g1_D'] = add(1, 'dd_det', 1.5)
-    # g2 missed group (2 truths, 0 dets), significant (gap 0.4)
+    # g2 missed group (2 truths, 0 dets, gap 0.4): no components -> not significant
     ids['g2_T0'] = add(2, 'lsst_truth', 0.0, 24.0)
     ids['g2_T1'] = add(2, 'lsst_truth', 0.5, 24.4)
     # g3 spurious group (0 truths, 2 dets)
@@ -547,7 +592,7 @@ def _build_e2e():
     ids['g7_D0'] = add(7, 'dd_det', 0.1)
     ids['g7_D1'] = add(7, 'dd_det', 1.3)
     # g8 Stage1 unrec_blend that Stage2 resolves into match+missed
-    #    (T0=0, T1=3.0 edgeless, D=0.2), significant (gap 0.5)
+    #    (T0=0, T1=3.0 edgeless, D=0.2): one component -> not significant
     ids['g8_T0'] = add(8, 'lsst_truth', 0.0, 22.0)
     ids['g8_T1'] = add(8, 'lsst_truth', 3.0, 22.5)
     ids['g8_D'] = add(8, 'dd_det', 0.2)
@@ -572,8 +617,7 @@ def e2e():
     counts = classify_stg1(counts, prefix='dd', det_col_name='n_dd')
     out = classify_stage2(analysis.copy(), counts, 'dd',
                           match_rad=MATCH_RAD, verbose=False)
-    out = add_group_blend_props(out)
-    out = add_sig_blend_flag(out, dmag_sig=1.0)
+    out = add_sig_blend_flag(out, 'dd', dmag_sig=1.0)
     return out, counts, ids
 
 
@@ -630,7 +674,7 @@ class TestEndToEndClassifyStage2:
         assert t0['dd_is_survivor'] and t0['dd_is_matched']
         assert t1['dd_is_absorbed'] and not t1['dd_is_missed']
         for r in (d, t0, t1):
-            assert r['dd_is_part_of_blend'] and r['dd_is_unrec_blend']
+            assert r['dd_is_part_of_blend'] and unrec(r, 'dd')
 
     def test_shred_group(self, e2e):
         out, _, ids = e2e
@@ -645,7 +689,7 @@ class TestEndToEndClassifyStage2:
         for k in ('g6_T0', 'g6_T1', 'g6_D0', 'g6_D1'):
             r = _row(out, ids[k])
             assert r['dd_is_matched'] and r['dd_is_resolved_blend']
-            assert r['dd_is_part_of_blend'] and not r['dd_is_unrec_blend']
+            assert r['dd_is_part_of_blend'] and not unrec(r, 'dd')
         assert _row(out, ids['g6_D0'])['dd_matched_id'] == ids['g6_T0']
         assert _row(out, ids['g6_D1'])['dd_matched_id'] == ids['g6_T1']
 
@@ -655,7 +699,7 @@ class TestEndToEndClassifyStage2:
         assert _row(out, ids['g7_T2'])['dd_is_survivor']
         assert _row(out, ids['g7_T1'])['dd_is_absorbed']
         for k in ('g7_T0', 'g7_T1', 'g7_T2', 'g7_D0', 'g7_D1'):
-            assert _row(out, ids[k])['dd_is_unrec_blend']
+            assert unrec(_row(out, ids[k]), 'dd')
 
     def test_stage1_unrec_downgraded_by_stage2(self, e2e):
         # g8: Stage 1 says unrec_blend, Stage 2 finds match + edgeless miss
@@ -665,7 +709,7 @@ class TestEndToEndClassifyStage2:
         assert _row(out, ids['g8_T1'])['dd_is_missed']
         for k in ('g8_D', 'g8_T0', 'g8_T1'):
             r = _row(out, ids[k])
-            assert not r['dd_is_part_of_blend'] and not r['dd_is_unrec_blend']
+            assert not r['dd_is_part_of_blend'] and not unrec(r, 'dd')
 
     def test_resolved_plus_shred_group(self, e2e):
         out, _, ids = e2e
@@ -679,19 +723,21 @@ class TestEndToEndClassifyStage2:
     def test_sig_blend_flags(self, e2e):
         out, _, ids = e2e
         assert _row(out, ids['g4_D'])['dd_is_matched']  # sanity
-        assert _row(out, ids['g4_T0'])['is_sig_blend']
-        assert _row(out, ids['g4_D'])['is_sig_blend']        # broadcast to det
-        assert not _row(out, ids['g6_T0'])['is_sig_blend']   # gap 3.0
-        assert _row(out, ids['g2_T0'])['is_sig_blend']       # missed but sig
-        assert _row(out, ids['g8_T0'])['is_sig_blend']       # sig, unengaged
-        assert not _row(out, ids['g0_T'])['is_sig_blend']    # single truth
+        assert _row(out, ids['g4_T0'])['dd_is_sig_blend']        # gap 0.5
+        assert _row(out, ids['g4_D'])['dd_is_sig_blend']         # broadcast to det
+        assert _row(out, ids['g7_T0'])['dd_is_sig_blend']        # gap 0.3
+        assert _row(out, ids['g9_T0'])['dd_is_sig_blend']        # gap 0.9
+        assert not _row(out, ids['g6_T0'])['dd_is_sig_blend']    # gap 3.0
+        assert not _row(out, ids['g2_T0'])['dd_is_sig_blend']    # missed pair: no components
+        assert not _row(out, ids['g8_T0'])['dd_is_sig_blend']    # 1 connected truth: no blend
+        assert not _row(out, ids['g0_T'])['dd_is_sig_blend']     # single truth
 
     def test_engaged_components_partition(self, e2e):
-        # engaged component = truth & is_part_of_blend & is_sig_blend;
+        # component of a significant blend = truth & is_part_of_blend & is_sig_blend;
         # exactly one of {resolved, survivor, absorbed} (paper: sum to 1)
         out, _, _ = e2e
         truths = out[out['catalog_key'] == 'lsst_truth']
-        eng = truths[truths['dd_is_part_of_blend'] & truths['is_sig_blend']]
+        eng = truths[truths['dd_is_part_of_blend'] & truths['dd_is_sig_blend']]
         assert len(eng) > 0
         cats = (eng['dd_is_resolved_blend'].astype(int)
                 + eng['dd_is_survivor'].astype(int)
@@ -773,7 +819,7 @@ class TestInvariantsRandomized:
 
             # resolved vs unrecognized are group-exclusive
             assert not (truth_r['is_resolved_blend'].any()
-                        and truth_r['is_unrec_blend'].any())
+                        and unrec(truth_r).any())
 
             # blend-component partition (paper: resolved+survivor+absorbed=1)
             in_blend = truth_r['is_part_of_blend']
@@ -789,16 +835,16 @@ class TestInvariantsRandomized:
 
             # survivor => matched & unrec; absorbed => unmatched & unrec
             assert not (truth_r['is_survivor'] & ~m_t).any()
-            assert not (truth_r['is_survivor'] & ~truth_r['is_unrec_blend']).any()
+            assert not (truth_r['is_survivor'] & ~unrec(truth_r)).any()
             assert not (truth_r['is_absorbed'] & m_t).any()
             assert not (truth_r['is_absorbed']
-                        & ~truth_r['is_unrec_blend']).any()
+                        & ~unrec(truth_r)).any()
 
             # # partial_deblend == unrec_blend under maximal matching
             # assert (truth_r['is_partial_deblend']
-            #         == truth_r['is_unrec_blend']).all()
+            #         == unrec(truth_r)).all()
             # assert (det_r['is_partial_deblend']
-            #         == det_r['is_unrec_blend']).all()
+            #         == unrec(det_r)).all()
 
 
 # ----------------------------------------------------------------------------
